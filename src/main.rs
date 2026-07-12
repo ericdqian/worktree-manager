@@ -1,6 +1,10 @@
 use clap::Parser;
 use dialoguer::Input;
-use std::{env, process::ExitCode};
+use std::{
+    env,
+    io::{self, IsTerminal},
+    process::ExitCode,
+};
 use worktree_manager::{CONFIG_FILE_NAME, create_and_setup_worktree, resolve_worktree_name};
 
 #[derive(Parser)]
@@ -43,6 +47,15 @@ fn run() -> Result<(), String> {
 }
 
 fn prompt_worktree_name() -> Result<String, String> {
+    if !io::stdin().is_terminal() {
+        let mut input = String::new();
+        io::stdin()
+            .read_line(&mut input)
+            .map_err(|error| format!("failed to read worktree name: {error}"))?;
+
+        return Ok(resolve_worktree_name(&input));
+    }
+
     let input = Input::<String>::new()
         .with_prompt("Worktree name (blank for random)")
         .allow_empty(true)

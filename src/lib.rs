@@ -281,3 +281,93 @@ fn git_status(cwd: &Path, args: &[&str]) -> Result<std::process::Output, String>
         .output()
         .map_err(|error| format!("failed to start git {}: {error}", args.join(" ")))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn resolve_worktree_name_trims_explicit_input() {
+        assert_eq!(resolve_worktree_name("  feature-a  "), "feature-a");
+    }
+
+    #[test]
+    fn random_name_has_path_safe_shape_without_fixed_agent_prefix() {
+        let name = generate_random_name();
+
+        assert_eq!(name.len(), 10);
+        assert!(!name.starts_with("agent-"));
+        assert!(
+            name.chars()
+                .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit())
+        );
+    }
+
+    #[test]
+    fn validate_worktree_name_accepts_simple_slugs() {
+        assert!(validate_worktree_name("feature-a_1").is_ok());
+        assert!(validate_worktree_name("release.2026").is_ok());
+    }
+
+    #[test]
+    fn validate_worktree_name_rejects_unsafe_names() {
+        for name in [
+            "",
+            "-feature",
+            "feature/",
+            "feature..a",
+            "feature.lock",
+            "@",
+        ] {
+            assert!(validate_worktree_name(name).is_err(), "{name} should fail");
+        }
+    }
+
+    #[test]
+    fn derive_worktree_path_uses_sibling_repo_name_and_worktree_name() {
+        let repo_root = Path::new("/tmp/example");
+
+        assert_eq!(
+            derive_worktree_path(repo_root, "feature-a").unwrap(),
+            PathBuf::from("/tmp/example-feature-a")
+        );
+    }
+
+    #[test]
+    fn load_config_returns_none_when_file_is_missing() {
+        let temp_dir = tempdir().unwrap();
+
+        assert_eq!(load_config(temp_dir.path()).unwrap(), None);
+    }
+
+    #[test]
+    fn load_config_parses_setup_commands() {
+        let temp_dir = tempdir().unwrap();
+        fs::write(
+            temp_dir.path().join(CONFIG_FILE_NAME),
+            r#"{"setupCommands":["cargo fetch","cargo test"]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            load_config(temp_dir.path()).unwrap(),
+            Some(WorktreeConfig {
+                setup_commands: vec!["cargo fetch".to_string(), "cargo test".to_string()],
+            })
+        );
+    }
+
+    #[test]
+    fn load_config_fails_for_invalid_json() {
+        let temp_dir = tempdir().unwrap();
+        fs::write(temp_dir.path().join(CONFIG_FILE_NAME), "{").unwrap();
+
+        assert!(
+            load_config(temp_dir.path())
+                .unwrap_err()
+                .contains("failed to parse")
+        );
+    }
+}
