@@ -21,13 +21,8 @@ fn creates_worktree_and_runs_setup_commands() {
         .stdout(predicate::str::contains("created worktree 'feature-a'"))
         .stdout(predicate::str::contains("ran 1 setup command(s)"));
 
-    assert!(
-        temp_dir
-            .path()
-            .join("repo-feature-a")
-            .join("setup.txt")
-            .exists()
-    );
+    assert!(worktree_path(&repo, "feature-a").join("setup.txt").exists());
+    assert_worktree_directory_is_ignored(&repo);
 }
 
 #[test]
@@ -48,7 +43,7 @@ fn blank_name_generates_random_slug_without_fixed_agent_prefix() {
 
     assert_eq!(name.len(), 10);
     assert!(!name.starts_with("agent-"));
-    assert!(temp_dir.path().join(format!("repo-{name}")).exists());
+    assert!(worktree_path(&repo, name).exists());
 }
 
 #[test]
@@ -77,7 +72,8 @@ fn missing_config_warns_and_skips_setup() {
             "warning: {CONFIG_FILE_NAME} not found; skipping setup commands"
         )));
 
-    assert!(temp_dir.path().join("repo-feature-a").exists());
+    assert!(worktree_path(&repo, "feature-a").exists());
+    assert_git_status_is_clean(&repo);
 }
 
 #[test]
@@ -92,7 +88,7 @@ fn invalid_config_fails_before_creating_worktree() {
         .failure()
         .stderr(predicate::str::contains("failed to parse"));
 
-    assert!(!temp_dir.path().join("repo-feature-a").exists());
+    assert!(!worktree_path(&repo, "feature-a").exists());
 }
 
 #[test]
@@ -109,14 +105,14 @@ fn existing_branch_fails_before_creating_worktree() {
             "branch 'feature-a' already exists",
         ));
 
-    assert!(!temp_dir.path().join("repo-feature-a").exists());
+    assert!(!worktree_path(&repo, "feature-a").exists());
 }
 
 #[test]
 fn existing_target_path_fails_before_creating_worktree() {
     let temp_dir = tempdir().unwrap();
     let repo = initialized_repo(&temp_dir);
-    fs::create_dir(temp_dir.path().join("repo-feature-a")).unwrap();
+    fs::create_dir_all(worktree_path(&repo, "feature-a")).unwrap();
 
     worktree_command(&repo)
         .write_stdin("feature-a\n")
@@ -139,7 +135,7 @@ fn setup_command_failure_leaves_worktree_for_inspection() {
             "setup command 'exit 7' failed with status",
         ));
 
-    assert!(temp_dir.path().join("repo-feature-a").exists());
+    assert!(worktree_path(&repo, "feature-a").exists());
 }
 
 fn worktree_command(cwd: &Path) -> Command {
@@ -188,4 +184,33 @@ fn created_worktree_name(stdout: &str) -> &str {
         .nth(1)
         .and_then(|suffix| suffix.split('\'').next())
         .unwrap()
+}
+
+fn worktree_path(repo: &Path, worktree_name: &str) -> PathBuf {
+    repo.join(".worktrees").join(worktree_name)
+}
+
+fn assert_worktree_directory_is_ignored(repo: &Path) {
+    let exclude_file = fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+
+    assert!(exclude_file.lines().any(|line| line == "/.worktrees/"));
+}
+
+fn assert_git_status_is_clean(repo: &Path) {
+    let output = ProcessCommand::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "git status failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "git status showed untracked files: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
 }
