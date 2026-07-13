@@ -7,6 +7,8 @@ use std::{
 };
 
 pub const CONFIG_FILE_NAME: &str = "agent-worktree.config.json";
+const WORKTREE_DIRECTORY_NAME: &str = ".worktrees";
+const WORKTREE_IGNORE_PATTERN: &str = "/.worktrees/";
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct WorktreeOutcome {
@@ -37,10 +39,13 @@ pub fn create_and_setup_worktree(
     ensure_head_exists(&git_context.repo_root)?;
     ensure_branch_available(&git_context.repo_root, worktree_name)?;
 
-    let worktree_path = derive_worktree_path(&git_context.repo_root, worktree_name)?;
+    let worktree_path = derive_worktree_path(&git_context.repo_root, worktree_name);
     ensure_target_path_available(&worktree_path)?;
 
     let config = load_config(&git_context.repo_root)?;
+
+    // Keep generated worktrees out of status without changing tracked project files.
+    ensure_worktree_directory_is_ignored(&git_context.repo_root)?;
     create_worktree(&git_context.repo_root, worktree_name, &worktree_path)?;
 
     let setup_commands_run = match &config {
@@ -110,25 +115,8 @@ pub fn validate_worktree_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn derive_worktree_path(repo_root: &Path, worktree_name: &str) -> Result<PathBuf, String> {
-    let repo_name = repo_root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            format!(
-                "could not determine repository name from {}",
-                repo_root.display()
-            )
-        })?;
-
-    let parent = repo_root.parent().ok_or_else(|| {
-        format!(
-            "could not determine parent directory for {}",
-            repo_root.display()
-        )
-    })?;
-
-    Ok(parent.join(format!("{repo_name}-{worktree_name}")))
+pub fn derive_worktree_path(repo_root: &Path, worktree_name: &str) -> PathBuf {
+    repo_root.join(WORKTREE_DIRECTORY_NAME).join(worktree_name)
 }
 
 pub fn load_config(repo_root: &Path) -> Result<Option<WorktreeConfig>, String> {
@@ -197,6 +185,41 @@ fn ensure_target_path_available(worktree_path: &Path) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn ensure_worktree_directory_is_ignored(repo_root: &Path) -> Result<(), String> {
+    let exclude_path = git_path(repo_root, "info/exclude")?;
+    let contents = match fs::read_to_string(&exclude_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(format!(
+                "failed to read Git exclude file {}: {error}",
+                exclude_path.display()
+            ));
+        }
+    };
+
+    if contents
+        .lines()
+        .any(|line| line.trim() == WORKTREE_IGNORE_PATTERN)
+    {
+        return Ok(());
+    }
+
+    let separator = if contents.is_empty() || contents.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    let updated_contents = format!("{contents}{separator}{WORKTREE_IGNORE_PATTERN}\n");
+
+    fs::write(&exclude_path, updated_contents).map_err(|error| {
+        format!(
+            "failed to update Git exclude file {}: {error}",
+            exclude_path.display()
+        )
+    })
 }
 
 fn create_worktree(
@@ -274,6 +297,19 @@ fn git_output(cwd: &Path, args: &[&str]) -> Result<String, String> {
     ))
 }
 
+fn git_path(repo_root: &Path, git_path: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(git_output(
+        repo_root,
+        &["rev-parse", "--git-path", git_path],
+    )?);
+
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(repo_root.join(path))
+    }
+}
+
 fn git_status(cwd: &Path, args: &[&str]) -> Result<std::process::Output, String> {
     Command::new("git")
         .args(args)
@@ -326,12 +362,12 @@ mod tests {
     }
 
     #[test]
-    fn derive_worktree_path_uses_sibling_repo_name_and_worktree_name() {
+    fn derive_worktree_path_uses_hidden_worktree_directory() {
         let repo_root = Path::new("/tmp/example");
 
         assert_eq!(
-            derive_worktree_path(repo_root, "feature-a").unwrap(),
-            PathBuf::from("/tmp/example-feature-a")
+            derive_worktree_path(repo_root, "feature-a"),
+            PathBuf::from("/tmp/example/.worktrees/feature-a")
         );
     }
 

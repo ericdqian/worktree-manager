@@ -30,11 +30,16 @@ Worktree name (blank for random):
 Enter a path-safe name such as `fix-login` to create:
 
 ```text
-../<repo-name>-fix-login
+.worktrees/fix-login
 ```
 
 Press Enter without a name to generate a random 10-character slug. Generated
 names do not use a fixed prefix.
+
+Worktrees are created inside the repository's `.worktrees/` directory. The CLI
+adds `/.worktrees/` to the repository's local `.git/info/exclude`, so generated
+worktrees do not appear as untracked files without changing the repository's
+tracked `.gitignore`.
 
 ## Setup Config
 
@@ -67,5 +72,5 @@ The CLI fails before creating a worktree when:
 Worktrees are created with:
 
 ```sh
-git worktree add -b <worktree-name> ../<repo-name>-<worktree-name>
+git worktree add -b <worktree-name> .worktrees/<worktree-name>
 ```
