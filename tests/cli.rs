@@ -143,7 +143,7 @@ fn setup_command_failure_leaves_worktree_for_inspection() {
 }
 
 fn worktree_command(cwd: &Path) -> Command {
-    let mut command = Command::cargo_bin("worktree-manager").unwrap();
+    let mut command = Command::cargo_bin("wt").unwrap();
     command.current_dir(cwd);
     command
 }

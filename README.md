@@ -4,10 +4,21 @@
 Run it from inside a Git work tree, choose a worktree name, and it creates a
 sibling worktree with a matching branch before running optional setup commands.
 
+## Installation
+
+Install the `wt` command from this repository:
+
+```sh
+cargo install --path .
+```
+
+Cargo installs the compiled binary to `~/.cargo/bin/wt`. Ensure that directory
+is on your `PATH`, then run `wt` from any Git work tree.
+
 ## Usage
 
 ```sh
-cargo run
+wt
 ```
 
 The CLI prompts for a worktree name:
