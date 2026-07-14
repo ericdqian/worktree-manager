@@ -15,6 +15,20 @@ cargo install --path .
 Cargo installs the compiled binary to `~/.cargo/bin/wt`. Ensure that directory
 is on your `PATH`, then run `wt` from any Git work tree.
 
+## Shell Integration
+
+A standalone CLI cannot change its parent shell's current directory. To enter
+each newly created worktree automatically, add this to your zsh or bash startup
+file:
+
+```sh
+eval "$(command wt shell-init)"
+```
+
+After opening a new shell, `wt` creates the worktree and changes into it when
+the command succeeds. Use `command wt` to invoke the underlying binary without
+the directory change.
+
 ## Usage
 
 ```sh

@@ -47,6 +47,45 @@ fn blank_name_generates_random_slug_without_fixed_agent_prefix() {
 }
 
 #[test]
+fn writes_created_worktree_path_for_shell_integration() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+    let path_file = temp_dir.path().join("created-worktree-path");
+
+    worktree_command(&repo)
+        .args(["--created-path-file", path_file.to_str().unwrap()])
+        .write_stdin("feature-a\n")
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs::read(path_file).unwrap(),
+        fs::canonicalize(&repo)
+            .unwrap()
+            .join(".worktrees/feature-a")
+            .as_os_str()
+            .as_encoded_bytes()
+    );
+}
+
+#[test]
+fn shell_init_prints_zsh_and_bash_wrapper() {
+    Command::cargo_bin("wt")
+        .unwrap()
+        .arg("shell-init")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wt() {"))
+        .stdout(predicate::str::contains(
+            "local wt_path_file worktree_path wt_result",
+        ))
+        .stdout(predicate::str::contains(
+            "command wt --created-path-file \"$wt_path_file\" \"$@\"",
+        ))
+        .stdout(predicate::str::contains("cd -- \"$worktree_path\""));
+}
+
+#[test]
 fn fails_outside_git_work_tree() {
     let temp_dir = tempdir().unwrap();
 
