@@ -70,17 +70,17 @@ fn writes_created_worktree_path_for_shell_integration() {
 
 #[test]
 fn shell_init_prints_zsh_and_bash_wrapper() {
-    Command::cargo_bin("wt")
+    Command::cargo_bin("worktree-manager")
         .unwrap()
         .arg("shell-init")
         .assert()
         .success()
-        .stdout(predicate::str::contains("wt() {"))
+        .stdout(predicate::str::contains("worktree-manager() {"))
         .stdout(predicate::str::contains(
             "local wt_path_file worktree_path wt_result",
         ))
         .stdout(predicate::str::contains(
-            "command wt --created-path-file \"$wt_path_file\" \"$@\"",
+            "command worktree-manager --created-path-file \"$wt_path_file\" \"$@\"",
         ))
         .stdout(predicate::str::contains("cd -- \"$worktree_path\""));
 }
@@ -178,7 +178,7 @@ fn setup_command_failure_leaves_worktree_for_inspection() {
 }
 
 fn worktree_command(cwd: &Path) -> Command {
-    let mut command = Command::cargo_bin("wt").unwrap();
+    let mut command = Command::cargo_bin("worktree-manager").unwrap();
     command.current_dir(cwd);
     command
 }

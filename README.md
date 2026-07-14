@@ -6,14 +6,15 @@ sibling worktree with a matching branch before running optional setup commands.
 
 ## Installation
 
-Install the `wt` command from this repository:
+Install the `worktree-manager` command from this repository:
 
 ```sh
 cargo install --path .
 ```
 
-Cargo installs the compiled binary to `~/.cargo/bin/wt`. Ensure that directory
-is on your `PATH`, then run `wt` from any Git work tree.
+Cargo installs the compiled binary to `~/.cargo/bin/worktree-manager`. Ensure
+that directory is on your `PATH`, then run `worktree-manager` from any Git work
+tree.
 
 ## Shell Integration
 
@@ -22,17 +23,17 @@ each newly created worktree automatically, add this to your zsh or bash startup
 file:
 
 ```sh
-eval "$(command wt shell-init)"
+eval "$(command worktree-manager shell-init)"
 ```
 
-After opening a new shell, `wt` creates the worktree and changes into it when
-the command succeeds. Use `command wt` to invoke the underlying binary without
-the directory change.
+After opening a new shell, `worktree-manager` creates the worktree and changes
+into it when the command succeeds. Use `command worktree-manager` to invoke the
+underlying binary without the directory change.
 
 ## Usage
 
 ```sh
-wt
+worktree-manager
 ```
 
 The CLI prompts for a worktree name:
