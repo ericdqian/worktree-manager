@@ -8,7 +8,7 @@ use std::{
 };
 use worktree_manager::{CONFIG_FILE_NAME, create_and_setup_worktree, resolve_worktree_name};
 
-const SHELL_INIT: &str = r#"worktree-manager() {
+const SHELL_INIT: &str = r#"wt() {
   local wt_path_file worktree_path wt_result
   wt_path_file="$(mktemp)" || return
   command worktree-manager --created-path-file "$wt_path_file" "$@"

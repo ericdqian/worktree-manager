@@ -75,7 +75,7 @@ fn shell_init_prints_zsh_and_bash_wrapper() {
         .arg("shell-init")
         .assert()
         .success()
-        .stdout(predicate::str::contains("worktree-manager() {"))
+        .stdout(predicate::str::contains("wt() {"))
         .stdout(predicate::str::contains(
             "local wt_path_file worktree_path wt_result",
         ))

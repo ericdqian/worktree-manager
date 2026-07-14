@@ -26,9 +26,10 @@ file:
 eval "$(command worktree-manager shell-init)"
 ```
 
-After opening a new shell, `worktree-manager` creates the worktree and changes
-into it when the command succeeds. Use `command worktree-manager` to invoke the
-underlying binary without the directory change.
+After opening a new shell, `wt` creates the worktree and changes into it when
+the command succeeds. The wrapper invokes `command worktree-manager`, so the
+underlying binary remains unambiguous and can be run directly without the
+directory change.
 
 ## Usage
 
