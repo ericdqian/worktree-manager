@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 
 [[bin]]
-name = "wt"
+name = "worktree-manager"
 path = "src/main.rs"
 
 [dependencies]
