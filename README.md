@@ -48,6 +48,9 @@ Base branch:
   another-local-branch
 ```
 
+Move through the selector with the arrow keys, `Ctrl+N`/`Ctrl+P`, or `j`/`k`,
+then press Enter to confirm the highlighted branch.
+
 The branch list uses the repository's existing refs and does not fetch from the
 remote. When stdin is not a terminal, the CLI skips the selector and uses
 `origin/main`.

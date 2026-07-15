@@ -681,6 +681,7 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
+ "console",
  "dialoguer",
  "predicates",
  "rand",
