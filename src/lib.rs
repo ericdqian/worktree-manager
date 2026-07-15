@@ -48,6 +48,32 @@ impl fmt::Display for WorktreeBase {
     }
 }
 
+pub fn list_worktree_bases(
+    cwd: &Path,
+    recent_local_branch_limit: usize,
+) -> Result<Vec<WorktreeBase>, String> {
+    let git_context = discover_git_context(cwd)?;
+    let count_argument = format!("--count={recent_local_branch_limit}");
+    let local_branches = git_output(
+        &git_context.repo_root,
+        &[
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)",
+            &count_argument,
+            "refs/heads",
+        ],
+    )?;
+
+    Ok(std::iter::once(WorktreeBase::OriginMain)
+        .chain(
+            local_branches
+                .lines()
+                .map(|branch_name| WorktreeBase::LocalBranch(branch_name.to_string())),
+        )
+        .collect())
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct GitContext {
     repo_root: PathBuf,

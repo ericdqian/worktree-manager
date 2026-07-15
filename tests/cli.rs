@@ -6,7 +6,9 @@ use std::{
     process::Command as ProcessCommand,
 };
 use tempfile::{TempDir, tempdir};
-use worktree_manager::{CONFIG_FILE_NAME, WorktreeBase, create_and_setup_worktree_from_base};
+use worktree_manager::{
+    CONFIG_FILE_NAME, WorktreeBase, create_and_setup_worktree_from_base, list_worktree_bases,
+};
 
 #[test]
 fn creates_worktree_and_runs_setup_commands() {
@@ -64,6 +66,35 @@ fn creates_worktree_from_selected_local_branch() {
     assert_eq!(
         git_output(&repo, "refs/heads/feature-a"),
         git_output(&repo, "refs/heads/recent-work")
+    );
+}
+
+#[test]
+fn lists_the_five_most_active_local_branches_after_origin_main() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+
+    for branch_number in 1..=6 {
+        let branch_name = format!("activity-{branch_number}");
+        run_git(&repo, &["switch", "-c", &branch_name]);
+        commit_with_date(
+            &repo,
+            &format!("Activity {branch_number}"),
+            &format!("2001-01-0{branch_number}T00:00:00Z"),
+        );
+        run_git(&repo, &["switch", "main"]);
+    }
+
+    assert_eq!(
+        list_worktree_bases(&repo, 5).unwrap(),
+        vec![
+            WorktreeBase::OriginMain,
+            WorktreeBase::LocalBranch("activity-6".to_string()),
+            WorktreeBase::LocalBranch("activity-5".to_string()),
+            WorktreeBase::LocalBranch("activity-4".to_string()),
+            WorktreeBase::LocalBranch("activity-3".to_string()),
+            WorktreeBase::LocalBranch("activity-2".to_string()),
+        ]
     );
 }
 
@@ -252,7 +283,7 @@ fn initialized_repo(temp_dir: &TempDir) -> PathBuf {
 
     fs::write(repo.join("README.md"), "# Test\n").unwrap();
     run_git(&repo, &["add", "README.md"]);
-    run_git(&repo, &["commit", "-m", "Initial commit"]);
+    commit_with_date(&repo, "Initial commit", "2000-01-01T00:00:00Z");
     run_git(&repo, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
 
     repo
@@ -273,6 +304,22 @@ fn run_git(repo: &Path, args: &[&str]) {
         output.status.success(),
         "git {} failed: {}",
         args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn commit_with_date(repo: &Path, message: &str, date: &str) {
+    let output = ProcessCommand::new("git")
+        .args(["commit", "--allow-empty", "-m", message])
+        .env("GIT_AUTHOR_DATE", date)
+        .env("GIT_COMMITTER_DATE", date)
+        .current_dir(repo)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "git commit failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 }

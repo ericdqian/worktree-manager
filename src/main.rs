@@ -1,12 +1,17 @@
 use clap::Parser;
-use dialoguer::Input;
+use dialoguer::{Input, Select};
 use std::{
     env, fs,
     io::{self, IsTerminal},
     path::Path,
     process::ExitCode,
 };
-use worktree_manager::{CONFIG_FILE_NAME, create_and_setup_worktree, resolve_worktree_name};
+use worktree_manager::{
+    CONFIG_FILE_NAME, WorktreeBase, create_and_setup_worktree_from_base, list_worktree_bases,
+    resolve_worktree_name,
+};
+
+const RECENT_LOCAL_BRANCH_LIMIT: usize = 5;
 
 const SHELL_INIT: &str = r#"wt() {
   local wt_path_file worktree_path wt_result
@@ -61,9 +66,10 @@ fn run(cli: Cli) -> Result<(), String> {
         return Ok(());
     }
 
-    let worktree_name = prompt_worktree_name()?;
     let cwd = env::current_dir().map_err(|error| format!("failed to determine cwd: {error}"))?;
-    let outcome = create_and_setup_worktree(&cwd, &worktree_name)?;
+    let base = prompt_worktree_base(&cwd)?;
+    let worktree_name = prompt_worktree_name()?;
+    let outcome = create_and_setup_worktree_from_base(&cwd, &worktree_name, &base)?;
 
     if outcome.config_missing {
         eprintln!("warning: {CONFIG_FILE_NAME} not found; skipping setup commands");
@@ -83,17 +89,20 @@ fn run(cli: Cli) -> Result<(), String> {
     Ok(())
 }
 
-fn write_created_path(created_path_file: &Path, worktree_path: &Path) -> Result<(), String> {
-    fs::write(
-        created_path_file,
-        worktree_path.as_os_str().as_encoded_bytes(),
-    )
-    .map_err(|error| {
-        format!(
-            "failed to write created worktree path to {}: {error}",
-            created_path_file.display()
-        )
-    })
+fn prompt_worktree_base(cwd: &Path) -> Result<WorktreeBase, String> {
+    if !io::stdin().is_terminal() {
+        return Ok(WorktreeBase::OriginMain);
+    }
+
+    let bases = list_worktree_bases(cwd, RECENT_LOCAL_BRANCH_LIMIT)?;
+    let selected_index = Select::new()
+        .with_prompt("Base branch")
+        .items(&bases)
+        .default(0)
+        .interact()
+        .map_err(|error| format!("failed to select base branch: {error}"))?;
+
+    Ok(bases[selected_index].clone())
 }
 
 fn prompt_worktree_name() -> Result<String, String> {
@@ -113,4 +122,17 @@ fn prompt_worktree_name() -> Result<String, String> {
         .map_err(|error| format!("failed to read worktree name: {error}"))?;
 
     Ok(resolve_worktree_name(&input))
+}
+
+fn write_created_path(created_path_file: &Path, worktree_path: &Path) -> Result<(), String> {
+    fs::write(
+        created_path_file,
+        worktree_path.as_os_str().as_encoded_bytes(),
+    )
+    .map_err(|error| {
+        format!(
+            "failed to write created worktree path to {}: {error}",
+            created_path_file.display()
+        )
+    })
 }
