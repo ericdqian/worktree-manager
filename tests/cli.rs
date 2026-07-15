@@ -6,7 +6,7 @@ use std::{
     process::Command as ProcessCommand,
 };
 use tempfile::{TempDir, tempdir};
-use worktree_manager::CONFIG_FILE_NAME;
+use worktree_manager::{CONFIG_FILE_NAME, WorktreeBase, create_and_setup_worktree_from_base};
 
 #[test]
 fn creates_worktree_and_runs_setup_commands() {
@@ -23,6 +23,48 @@ fn creates_worktree_and_runs_setup_commands() {
 
     assert!(worktree_path(&repo, "feature-a").join("setup.txt").exists());
     assert_worktree_directory_is_ignored(&repo);
+}
+
+#[test]
+fn creates_worktree_from_origin_main_instead_of_current_head() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+    run_git(
+        &repo,
+        &["commit", "--allow-empty", "-m", "Local-only commit"],
+    );
+
+    worktree_command(&repo)
+        .write_stdin("feature-a\n")
+        .assert()
+        .success();
+
+    assert_eq!(
+        git_output(&repo, "refs/heads/feature-a"),
+        git_output(&repo, "refs/remotes/origin/main")
+    );
+    assert_ne!(git_output(&repo, "HEAD"), git_output(&repo, "feature-a"));
+}
+
+#[test]
+fn creates_worktree_from_selected_local_branch() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+    run_git(&repo, &["switch", "-c", "recent-work"]);
+    run_git(&repo, &["commit", "--allow-empty", "-m", "Recent work"]);
+    run_git(&repo, &["switch", "main"]);
+
+    create_and_setup_worktree_from_base(
+        &repo,
+        "feature-a",
+        &WorktreeBase::LocalBranch("recent-work".to_string()),
+    )
+    .unwrap();
+
+    assert_eq!(
+        git_output(&repo, "refs/heads/feature-a"),
+        git_output(&repo, "refs/heads/recent-work")
+    );
 }
 
 #[test]
@@ -161,6 +203,23 @@ fn existing_target_path_fails_before_creating_worktree() {
 }
 
 #[test]
+fn missing_origin_main_fails_before_creating_worktree() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+    run_git(&repo, &["update-ref", "-d", "refs/remotes/origin/main"]);
+
+    worktree_command(&repo)
+        .write_stdin("feature-a\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "base branch 'origin/main' does not exist or has no commits",
+        ));
+
+    assert!(!worktree_path(&repo, "feature-a").exists());
+}
+
+#[test]
 fn setup_command_failure_leaves_worktree_for_inspection() {
     let temp_dir = tempdir().unwrap();
     let repo = initialized_repo(&temp_dir);
@@ -194,6 +253,7 @@ fn initialized_repo(temp_dir: &TempDir) -> PathBuf {
     fs::write(repo.join("README.md"), "# Test\n").unwrap();
     run_git(&repo, &["add", "README.md"]);
     run_git(&repo, &["commit", "-m", "Initial commit"]);
+    run_git(&repo, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
 
     repo
 }
@@ -215,6 +275,22 @@ fn run_git(repo: &Path, args: &[&str]) {
         args.join(" "),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn git_output(repo: &Path, revision: &str) -> String {
+    let output = ProcessCommand::new("git")
+        .args(["rev-parse", revision])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "git rev-parse {revision} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
 }
 
 fn created_worktree_name(stdout: &str) -> &str {
