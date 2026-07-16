@@ -1,8 +1,9 @@
 # worktree-manager
 
 `worktree-manager` is a small CLI for creating Git worktrees for AI agent work.
-Run it from inside a Git work tree, choose a worktree name, and it creates a
-sibling worktree with a matching branch before running optional setup commands.
+Run it from inside a Git work tree, choose a base branch and worktree name, and
+it creates a sibling worktree with a matching branch before running optional
+setup commands.
 
 ## Installation
 
@@ -37,7 +38,24 @@ directory change.
 worktree-manager
 ```
 
-The CLI prompts for a worktree name:
+The CLI first prompts for a base branch. `origin/main` is selected by default,
+followed by the five local branches with the most recent tip-commit activity:
+
+```text
+Base branch:
+> origin/main
+  recent-local-branch
+  another-local-branch
+```
+
+Move through the selector with the arrow keys, `Ctrl+N`/`Ctrl+P`, or `j`/`k`,
+then press Enter to confirm the highlighted branch.
+
+The branch list uses the repository's existing refs and does not fetch from the
+remote. When stdin is not a terminal, the CLI skips the selector and uses
+`origin/main`.
+
+The CLI then prompts for a worktree name:
 
 ```text
 Worktree name (blank for random):
@@ -81,6 +99,7 @@ The CLI fails before creating a worktree when:
 
 - the current directory is not inside a Git work tree
 - the repository has no commits
+- the selected base branch does not exist or has no commits
 - the requested branch already exists
 - the target sibling path already exists
 - `agent-worktree.config.json` exists but is invalid
@@ -88,5 +107,5 @@ The CLI fails before creating a worktree when:
 Worktrees are created with:
 
 ```sh
-git worktree add -b <worktree-name> .worktrees/<worktree-name>
+git worktree add -b <worktree-name> .worktrees/<worktree-name> <base-ref>
 ```

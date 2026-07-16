@@ -1,7 +1,7 @@
 use rand::{Rng, distr::Alphanumeric};
 use serde::Deserialize;
 use std::{
-    fs, io,
+    fmt, fs, io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -24,6 +24,56 @@ pub struct WorktreeConfig {
     pub setup_commands: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorktreeBase {
+    OriginMain,
+    LocalBranch(String),
+}
+
+impl WorktreeBase {
+    fn reference(&self) -> String {
+        match self {
+            Self::OriginMain => "refs/remotes/origin/main".to_string(),
+            Self::LocalBranch(branch_name) => format!("refs/heads/{branch_name}"),
+        }
+    }
+}
+
+impl fmt::Display for WorktreeBase {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OriginMain => formatter.write_str("origin/main"),
+            Self::LocalBranch(branch_name) => formatter.write_str(branch_name),
+        }
+    }
+}
+
+pub fn list_worktree_bases(
+    cwd: &Path,
+    recent_local_branch_limit: usize,
+) -> Result<Vec<WorktreeBase>, String> {
+    let git_context = discover_git_context(cwd)?;
+    let count_argument = format!("--count={recent_local_branch_limit}");
+    let local_branches = git_output(
+        &git_context.repo_root,
+        &[
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)",
+            &count_argument,
+            "refs/heads",
+        ],
+    )?;
+
+    Ok(std::iter::once(WorktreeBase::OriginMain)
+        .chain(
+            local_branches
+                .lines()
+                .map(|branch_name| WorktreeBase::LocalBranch(branch_name.to_string())),
+        )
+        .collect())
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct GitContext {
     repo_root: PathBuf,
@@ -33,10 +83,19 @@ pub fn create_and_setup_worktree(
     cwd: &Path,
     worktree_name: &str,
 ) -> Result<WorktreeOutcome, String> {
+    create_and_setup_worktree_from_base(cwd, worktree_name, &WorktreeBase::OriginMain)
+}
+
+pub fn create_and_setup_worktree_from_base(
+    cwd: &Path,
+    worktree_name: &str,
+    base: &WorktreeBase,
+) -> Result<WorktreeOutcome, String> {
     validate_worktree_name(worktree_name)?;
 
     let git_context = discover_git_context(cwd)?;
     ensure_head_exists(&git_context.repo_root)?;
+    ensure_base_exists(&git_context.repo_root, base)?;
     ensure_branch_available(&git_context.repo_root, worktree_name)?;
 
     let worktree_path = derive_worktree_path(&git_context.repo_root, worktree_name);
@@ -46,7 +105,7 @@ pub fn create_and_setup_worktree(
 
     // Keep generated worktrees out of status without changing tracked project files.
     ensure_worktree_directory_is_ignored(&git_context.repo_root)?;
-    create_worktree(&git_context.repo_root, worktree_name, &worktree_path)?;
+    create_worktree(&git_context.repo_root, worktree_name, &worktree_path, base)?;
 
     let setup_commands_run = match &config {
         Some(config) => run_setup_commands(&worktree_path, &config.setup_commands)?,
@@ -153,6 +212,18 @@ fn ensure_head_exists(repo_root: &Path) -> Result<(), String> {
         .map_err(|_| "repository has no commits yet; create an initial commit first".to_string())
 }
 
+fn ensure_base_exists(repo_root: &Path, base: &WorktreeBase) -> Result<(), String> {
+    let commit = format!("{}^{{commit}}", base.reference());
+
+    git_status(repo_root, &["rev-parse", "--verify", "--quiet", &commit]).and_then(|output| {
+        output
+            .status
+            .success()
+            .then_some(())
+            .ok_or_else(|| format!("base branch '{base}' does not exist or has no commits"))
+    })
+}
+
 fn ensure_branch_available(repo_root: &Path, worktree_name: &str) -> Result<(), String> {
     let branch_ref = format!("refs/heads/{worktree_name}");
     let output = Command::new("git")
@@ -226,10 +297,12 @@ fn create_worktree(
     repo_root: &Path,
     worktree_name: &str,
     worktree_path: &Path,
+    base: &WorktreeBase,
 ) -> Result<(), String> {
     let status = Command::new("git")
         .args(["worktree", "add", "-b", worktree_name])
         .arg(worktree_path)
+        .arg(base.reference())
         .current_dir(repo_root)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
