@@ -89,6 +89,18 @@ Place `agent-worktree.config.json` at the repository root:
 Command output streams directly to the terminal. If a command fails, the CLI
 returns a nonzero exit code and leaves the worktree in place for inspection.
 
+Each setup command receives `WORKTREE_MANAGER_REPO_ROOT`, the absolute path of
+the primary repository checkout from which the worktree was created. Use it to
+copy untracked local files without hardcoding a checkout path:
+
+```json
+{
+  "setupCommands": [
+    "cp \"$WORKTREE_MANAGER_REPO_ROOT/.env\" ./.env"
+  ]
+}
+```
+
 The config file is optional. If it is missing, the CLI prints a warning and skips
 setup commands. If it exists but cannot be parsed, the CLI fails before creating
 the worktree.

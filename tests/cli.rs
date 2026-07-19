@@ -7,7 +7,8 @@ use std::{
 };
 use tempfile::{TempDir, tempdir};
 use worktree_manager::{
-    CONFIG_FILE_NAME, WorktreeBase, create_and_setup_worktree_from_base, list_worktree_bases,
+    CONFIG_FILE_NAME, SETUP_REPOSITORY_ROOT_ENV, WorktreeBase, create_and_setup_worktree_from_base,
+    list_worktree_bases,
 };
 
 #[test]
@@ -25,6 +26,28 @@ fn creates_worktree_and_runs_setup_commands() {
 
     assert!(worktree_path(&repo, "feature-a").join("setup.txt").exists());
     assert_worktree_directory_is_ignored(&repo);
+}
+
+#[test]
+fn setup_commands_receive_primary_repository_root() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+    write_config(
+        &repo,
+        &format!(
+            r#"{{"setupCommands":["printf %s \"${{{SETUP_REPOSITORY_ROOT_ENV}}}\" > setup-repo-root.txt"]}}"#
+        ),
+    );
+
+    worktree_command(&repo)
+        .write_stdin("feature-a\n")
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs::read_to_string(worktree_path(&repo, "feature-a").join("setup-repo-root.txt")).unwrap(),
+        fs::canonicalize(repo).unwrap().display().to_string(),
+    );
 }
 
 #[test]
