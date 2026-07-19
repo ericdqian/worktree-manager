@@ -1,15 +1,19 @@
 use rand::{Rng, distr::Alphanumeric};
 use serde::Deserialize;
 use std::{
-    fmt, fs, io,
+    fmt,
+    fs::{self, File},
+    io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
 pub const CONFIG_FILE_NAME: &str = "agent-worktree.config.json";
 pub const SETUP_REPOSITORY_ROOT_ENV: &str = "WORKTREE_MANAGER_REPO_ROOT";
+pub const BACKGROUND_SETUP_WORKER_COMMAND: &str = "__run-background-setup";
 const WORKTREE_DIRECTORY_NAME: &str = ".worktrees";
 const WORKTREE_IGNORE_PATTERN: &str = "/.worktrees/";
+const BACKGROUND_SETUP_DIRECTORY: &str = "worktree-manager/setup";
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct WorktreeOutcome {
@@ -17,12 +21,25 @@ pub struct WorktreeOutcome {
     pub path: PathBuf,
     pub config_missing: bool,
     pub setup_commands_run: usize,
+    pub background_setup: Option<BackgroundSetup>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct BackgroundSetup {
+    pub repository_root: PathBuf,
+    pub worktree_path: PathBuf,
+    pub commands: Vec<String>,
+    pub log_path: PathBuf,
+    pub status_path: PathBuf,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeConfig {
+    #[serde(default)]
     pub setup_commands: Vec<String>,
+    #[serde(default)]
+    pub background_setup_commands: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,12 +143,159 @@ pub fn create_and_setup_worktree_from_base(
         )?,
         None => 0,
     };
+    let background_setup = match &config {
+        Some(config) => background_setup_for_commands(
+            &git_context.repo_root,
+            &worktree_path,
+            worktree_name,
+            &config.background_setup_commands,
+        )?,
+        None => None,
+    };
 
     Ok(WorktreeOutcome {
         name: worktree_name.to_string(),
         path: worktree_path,
         config_missing: config.is_none(),
         setup_commands_run,
+        background_setup,
+    })
+}
+
+fn background_setup_for_commands(
+    repository_root: &Path,
+    worktree_path: &Path,
+    worktree_name: &str,
+    commands: &[String],
+) -> Result<Option<BackgroundSetup>, String> {
+    if commands.is_empty() {
+        return Ok(None);
+    }
+
+    let setup_directory = git_path(repository_root, BACKGROUND_SETUP_DIRECTORY)?;
+
+    Ok(Some(BackgroundSetup {
+        repository_root: repository_root.to_path_buf(),
+        worktree_path: worktree_path.to_path_buf(),
+        commands: commands.to_vec(),
+        log_path: setup_directory.join(format!("{worktree_name}.log")),
+        status_path: setup_directory.join(format!("{worktree_name}.status")),
+    }))
+}
+
+pub fn start_background_setup(
+    worker_executable: &Path,
+    setup: &BackgroundSetup,
+) -> Result<u32, String> {
+    let setup_directory = setup
+        .log_path
+        .parent()
+        .ok_or_else(|| "background setup log path has no parent directory".to_string())?;
+    fs::create_dir_all(setup_directory).map_err(|error| {
+        format!(
+            "failed to create background setup directory {}: {error}",
+            setup_directory.display()
+        )
+    })?;
+    write_background_setup_status(&setup.status_path, "pending\n")?;
+
+    let log_file = File::create(&setup.log_path).map_err(|error| {
+        format!(
+            "failed to create background setup log {}: {error}",
+            setup.log_path.display()
+        )
+    })?;
+    let stdout_log = log_file.try_clone().map_err(|error| {
+        format!(
+            "failed to open background setup log {} for stdout: {error}",
+            setup.log_path.display()
+        )
+    })?;
+
+    let mut command = Command::new(worker_executable);
+    command
+        .arg(BACKGROUND_SETUP_WORKER_COMMAND)
+        .arg("--repository-root")
+        .arg(&setup.repository_root)
+        .arg("--worktree-path")
+        .arg(&setup.worktree_path)
+        .arg("--status-path")
+        .arg(&setup.status_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout_log))
+        .stderr(Stdio::from(log_file));
+
+    for setup_command in &setup.commands {
+        command.arg(format!("--setup-command={setup_command}"));
+    }
+
+    configure_detached_process(&mut command);
+
+    match command.spawn() {
+        Ok(child) => Ok(child.id()),
+        Err(error) => {
+            let message = format!(
+                "failed to start background setup worker {}: {error}",
+                worker_executable.display()
+            );
+            write_background_setup_status(&setup.status_path, &format!("failed\n{message}\n"))?;
+            Err(message)
+        }
+    }
+}
+
+#[cfg(unix)]
+fn configure_detached_process(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    // The worker must outlive this CLI and must not receive terminal signals intended for it.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+}
+
+#[cfg(windows)]
+fn configure_detached_process(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+    command.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+}
+
+pub fn run_background_setup_worker(
+    repository_root: &Path,
+    worktree_path: &Path,
+    status_path: &Path,
+    setup_commands: &[String],
+) -> Result<usize, String> {
+    write_background_setup_status(status_path, "running\n")?;
+
+    match run_setup_commands(repository_root, worktree_path, setup_commands) {
+        Ok(commands_run) => {
+            write_background_setup_status(status_path, "succeeded\n")?;
+            Ok(commands_run)
+        }
+        Err(error) => {
+            write_background_setup_status(status_path, &format!("failed\n{error}\n"))?;
+            Err(error)
+        }
+    }
+}
+
+fn write_background_setup_status(status_path: &Path, contents: &str) -> Result<(), String> {
+    fs::write(status_path, contents).map_err(|error| {
+        format!(
+            "failed to update background setup status {}: {error}",
+            status_path.display()
+        )
     })
 }
 
@@ -488,6 +652,25 @@ mod tests {
             load_config(temp_dir.path()).unwrap(),
             Some(WorktreeConfig {
                 setup_commands: vec!["cargo fetch".to_string(), "cargo test".to_string()],
+                background_setup_commands: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn load_config_parses_background_setup_commands_without_foreground_commands() {
+        let temp_dir = tempdir().unwrap();
+        fs::write(
+            temp_dir.path().join(CONFIG_FILE_NAME),
+            r#"{"backgroundSetupCommands":["npm install"]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            load_config(temp_dir.path()).unwrap(),
+            Some(WorktreeConfig {
+                setup_commands: Vec::new(),
+                background_setup_commands: vec!["npm install".to_string()],
             })
         );
     }
