@@ -7,6 +7,7 @@ use std::{
 };
 
 pub const CONFIG_FILE_NAME: &str = "agent-worktree.config.json";
+pub const SETUP_REPOSITORY_ROOT_ENV: &str = "WORKTREE_MANAGER_REPO_ROOT";
 const WORKTREE_DIRECTORY_NAME: &str = ".worktrees";
 const WORKTREE_IGNORE_PATTERN: &str = "/.worktrees/";
 
@@ -108,7 +109,11 @@ pub fn create_and_setup_worktree_from_base(
     create_worktree(&git_context.repo_root, worktree_name, &worktree_path, base)?;
 
     let setup_commands_run = match &config {
-        Some(config) => run_setup_commands(&worktree_path, &config.setup_commands)?,
+        Some(config) => run_setup_commands(
+            &git_context.repo_root,
+            &worktree_path,
+            &config.setup_commands,
+        )?,
         None => 0,
     };
 
@@ -317,18 +322,27 @@ fn create_worktree(
     }
 }
 
-fn run_setup_commands(worktree_path: &Path, setup_commands: &[String]) -> Result<usize, String> {
+fn run_setup_commands(
+    repo_root: &Path,
+    worktree_path: &Path,
+    setup_commands: &[String],
+) -> Result<usize, String> {
     for setup_command in setup_commands {
-        run_setup_command(worktree_path, setup_command)?;
+        run_setup_command(repo_root, worktree_path, setup_command)?;
     }
 
     Ok(setup_commands.len())
 }
 
-fn run_setup_command(worktree_path: &Path, setup_command: &str) -> Result<(), String> {
+fn run_setup_command(
+    repo_root: &Path,
+    worktree_path: &Path,
+    setup_command: &str,
+) -> Result<(), String> {
     let mut command = shell_command(setup_command);
     let status = command
         .current_dir(worktree_path)
+        .env(SETUP_REPOSITORY_ROOT_ENV, repo_root)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
