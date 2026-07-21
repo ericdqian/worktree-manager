@@ -8,7 +8,7 @@ use std::{
 use tempfile::{TempDir, tempdir};
 use worktree_manager::{
     CONFIG_FILE_NAME, SETUP_REPOSITORY_ROOT_ENV, WorktreeBase, create_and_setup_worktree_from_base,
-    list_worktree_bases,
+    current_worktree_base, list_worktree_bases,
 };
 
 #[test]
@@ -120,6 +120,27 @@ fn lists_all_local_branches_by_most_recent_activity() {
             WorktreeBase::LocalBranch("main".to_string()),
         ]
     );
+}
+
+#[test]
+fn identifies_the_current_local_branch() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+    run_git(&repo, &["switch", "-c", "current-work"]);
+
+    assert_eq!(
+        current_worktree_base(&repo).unwrap(),
+        Some(WorktreeBase::LocalBranch("current-work".to_string()))
+    );
+}
+
+#[test]
+fn detached_head_has_no_current_local_branch() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+    run_git(&repo, &["switch", "--detach"]);
+
+    assert_eq!(current_worktree_base(&repo).unwrap(), None);
 }
 
 #[test]
