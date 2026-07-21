@@ -14,8 +14,8 @@ cargo install --path .
 ```
 
 Cargo installs the compiled binary to `~/.cargo/bin/worktree-manager`. Ensure
-that directory is on your `PATH`, then run `worktree-manager` from any Git work
-tree.
+that directory and an `fzf` installation are on your `PATH`, then run
+`worktree-manager` from any Git work tree.
 
 ## Shell Integration
 
@@ -38,22 +38,25 @@ directory change.
 worktree-manager
 ```
 
-The CLI first prompts for a base branch. `origin/main` is selected by default,
-followed by the five local branches with the most recent tip-commit activity:
+The CLI first opens `fzf` with every local branch, ordered by the most recent
+tip-commit activity:
 
 ```text
-Base branch:
-> origin/main
-  recent-local-branch
-  another-local-branch
+╭──────────────────────────────╮
+│ Base branch:                 │
+│ > recent-local-branch        │
+│   another-local-branch       │
+│   main                       │
+╰──────────────────────────────╯
 ```
 
-Move through the selector with the arrow keys, `Ctrl+N`/`Ctrl+P`, or `j`/`k`,
-then press Enter to confirm the highlighted branch.
+Type to filter the branches, move through matches with the arrow keys or
+`Ctrl+N`/`Ctrl+P`, and press Enter to confirm the highlighted branch. Press
+Escape or `Ctrl+C` to cancel without creating a worktree.
 
-The branch list uses the repository's existing refs and does not fetch from the
-remote. When stdin is not a terminal, the CLI skips the selector and uses
-`origin/main`.
+The branch list uses the repository's existing local refs and does not include
+or fetch remote branches. When stdin is not a terminal, the CLI skips the
+selector and uses `origin/main`.
 
 The CLI then prompts for a worktree name:
 
@@ -111,6 +114,8 @@ The CLI fails before creating a worktree when:
 
 - the current directory is not inside a Git work tree
 - the repository has no commits
+- `fzf` is unavailable for interactive branch selection
+- the repository has no local branches to select
 - the selected base branch does not exist or has no commits
 - the requested branch already exists
 - the target sibling path already exists
