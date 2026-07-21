@@ -1,29 +1,15 @@
 use clap::Parser;
-use console::{Key, Term};
 use dialoguer::Input;
 use std::{
     env, fs,
-    io::{self, IsTerminal},
+    io::{self, IsTerminal, Write},
     path::Path,
-    process::ExitCode,
+    process::{Command, ExitCode, Stdio},
 };
 use worktree_manager::{
     CONFIG_FILE_NAME, WorktreeBase, create_and_setup_worktree_from_base, list_worktree_bases,
     resolve_worktree_name,
 };
-
-const RECENT_LOCAL_BRANCH_LIMIT: usize = 5;
-const BASE_SELECTOR_PROMPT: &str = "Base branch:";
-const CONTROL_N: char = '\u{e}';
-const CONTROL_P: char = '\u{10}';
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SelectorAction {
-    Next,
-    Previous,
-    Confirm,
-    Ignore,
-}
 
 const SHELL_INIT: &str = r#"wt() {
   local wt_path_file worktree_path wt_result
@@ -79,7 +65,9 @@ fn run(cli: Cli) -> Result<(), String> {
     }
 
     let cwd = env::current_dir().map_err(|error| format!("failed to determine cwd: {error}"))?;
-    let base = prompt_worktree_base(&cwd)?;
+    let Some(base) = prompt_worktree_base(&cwd)? else {
+        return Ok(());
+    };
     let worktree_name = prompt_worktree_name()?;
     let outcome = create_and_setup_worktree_from_base(&cwd, &worktree_name, &base)?;
 
@@ -101,106 +89,88 @@ fn run(cli: Cli) -> Result<(), String> {
     Ok(())
 }
 
-fn prompt_worktree_base(cwd: &Path) -> Result<WorktreeBase, String> {
+fn prompt_worktree_base(cwd: &Path) -> Result<Option<WorktreeBase>, String> {
     if !io::stdin().is_terminal() {
-        return Ok(WorktreeBase::OriginMain);
+        return Ok(Some(WorktreeBase::OriginMain));
     }
 
-    let bases = list_worktree_bases(cwd, RECENT_LOCAL_BRANCH_LIMIT)?;
-    let selected_index = interact_with_base_selector(&bases)?;
-
-    Ok(bases[selected_index].clone())
+    let bases = list_worktree_bases(cwd)?;
+    select_worktree_base_with_fzf(&bases)
 }
 
-fn interact_with_base_selector(bases: &[WorktreeBase]) -> Result<usize, String> {
-    if bases.is_empty() {
-        return Err("cannot select a base branch from an empty list".to_string());
-    }
-
-    let term = Term::stderr();
-    term.hide_cursor()
-        .map_err(|error| format!("failed to hide cursor for base branch selector: {error}"))?;
-    let selection_result = run_base_selector(&term, bases);
-    term.show_cursor()
-        .map_err(|error| format!("failed to restore cursor after base branch selector: {error}"))?;
-
-    selection_result
+fn select_worktree_base_with_fzf(bases: &[WorktreeBase]) -> Result<Option<WorktreeBase>, String> {
+    let mut fzf_command = Command::new("fzf");
+    run_fzf_base_selector(bases, &mut fzf_command)
 }
 
-fn run_base_selector(term: &Term, bases: &[WorktreeBase]) -> Result<usize, String> {
-    let mut selected_index = 0;
-
-    render_base_selector(term, bases, selected_index)?;
-
-    loop {
-        let key = term
-            .read_key()
-            .map_err(|error| format!("failed to read base branch selection: {error}"))?;
-        let action = selector_action(&key);
-
-        if action == SelectorAction::Confirm {
-            clear_base_selector(term, bases.len())?;
-            term.write_line(&format!("{BASE_SELECTOR_PROMPT} {}", bases[selected_index]))
-                .map_err(|error| format!("failed to report base branch selection: {error}"))?;
-            term.flush()
-                .map_err(|error| format!("failed to flush base branch selection: {error}"))?;
-
-            return Ok(selected_index);
-        }
-
-        let updated_index = updated_selection_index(selected_index, bases.len(), action);
-        if updated_index == selected_index {
-            continue;
-        }
-
-        selected_index = updated_index;
-        clear_base_selector(term, bases.len())?;
-        render_base_selector(term, bases, selected_index)?;
-    }
-}
-
-fn render_base_selector(
-    term: &Term,
+fn run_fzf_base_selector(
     bases: &[WorktreeBase],
-    selected_index: usize,
-) -> Result<(), String> {
-    term.write_line(BASE_SELECTOR_PROMPT)
-        .map_err(|error| format!("failed to render base branch selector: {error}"))?;
-
-    for (index, base) in bases.iter().enumerate() {
-        let marker = if index == selected_index { '>' } else { ' ' };
-        term.write_line(&format!("{marker} {base}"))
-            .map_err(|error| format!("failed to render base branch selector: {error}"))?;
+    fzf_command: &mut Command,
+) -> Result<Option<WorktreeBase>, String> {
+    if bases.is_empty() {
+        return Err(
+            "cannot select a base branch because the repository has no local branches".to_string(),
+        );
     }
 
-    term.flush()
-        .map_err(|error| format!("failed to flush base branch selector: {error}"))
-}
+    let mut fzf = fzf_command
+        .args([
+            "--height=40%",
+            "--layout=reverse",
+            "--border",
+            "--no-multi",
+            "--prompt=Base branch: ",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                "fzf is required for interactive branch selection; install fzf and try again"
+                    .to_string()
+            } else {
+                format!("failed to start fzf for base branch selection: {error}")
+            }
+        })?;
 
-fn clear_base_selector(term: &Term, base_count: usize) -> Result<(), String> {
-    term.clear_last_lines(base_count + 1)
-        .map_err(|error| format!("failed to redraw base branch selector: {error}"))
-}
+    let write_result: Result<(), String> = (|| {
+        let mut fzf_input = fzf
+            .stdin
+            .take()
+            .ok_or_else(|| "failed to open fzf input".to_string())?;
 
-fn selector_action(key: &Key) -> SelectorAction {
-    match key {
-        Key::ArrowDown | Key::Tab | Key::Char('j' | CONTROL_N) => SelectorAction::Next,
-        Key::ArrowUp | Key::BackTab | Key::Char('k' | CONTROL_P) => SelectorAction::Previous,
-        Key::Enter | Key::Char(' ') => SelectorAction::Confirm,
-        _ => SelectorAction::Ignore,
+        for base in bases {
+            writeln!(fzf_input, "{base}")
+                .map_err(|error| format!("failed to send branches to fzf: {error}"))?;
+        }
+
+        Ok(())
+    })();
+
+    let output = fzf
+        .wait_with_output()
+        .map_err(|error| format!("failed to wait for fzf base branch selection: {error}"))?;
+
+    if output.status.code() == Some(130) {
+        return Ok(None);
     }
-}
 
-fn updated_selection_index(
-    selected_index: usize,
-    item_count: usize,
-    action: SelectorAction,
-) -> usize {
-    match action {
-        SelectorAction::Next => (selected_index + 1) % item_count,
-        SelectorAction::Previous => (selected_index + item_count - 1) % item_count,
-        SelectorAction::Confirm | SelectorAction::Ignore => selected_index,
+    if !output.status.success() {
+        return Err(format!(
+            "fzf base branch selection failed with status {}",
+            output.status
+        ));
     }
+
+    write_result?;
+
+    let selected_branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    bases
+        .iter()
+        .find(|base| base.to_string() == selected_branch)
+        .cloned()
+        .map(Some)
+        .ok_or_else(|| format!("fzf returned unknown base branch '{selected_branch}'"))
 }
 
 fn prompt_worktree_name() -> Result<String, String> {
@@ -240,21 +210,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn control_n_moves_to_the_next_selection() {
-        assert_eq!(selector_action(&Key::Char(CONTROL_N)), SelectorAction::Next);
-    }
+    fn fzf_selects_a_local_branch() {
+        let bases = vec![
+            WorktreeBase::LocalBranch("main".to_string()),
+            WorktreeBase::LocalBranch("feature-a".to_string()),
+        ];
+        let mut command = shell_test_command("sed -n '2p'");
 
-    #[test]
-    fn control_p_moves_to_the_previous_selection() {
         assert_eq!(
-            selector_action(&Key::Char(CONTROL_P)),
-            SelectorAction::Previous
+            run_fzf_base_selector(&bases, &mut command).unwrap(),
+            Some(WorktreeBase::LocalBranch("feature-a".to_string()))
         );
     }
 
     #[test]
-    fn selector_navigation_wraps_at_both_ends() {
-        assert_eq!(updated_selection_index(2, 3, SelectorAction::Next), 0);
-        assert_eq!(updated_selection_index(0, 3, SelectorAction::Previous), 2);
+    fn cancelling_fzf_cancels_branch_selection() {
+        let bases = vec![WorktreeBase::LocalBranch("main".to_string())];
+        let mut command = shell_test_command("exit 130");
+
+        assert_eq!(run_fzf_base_selector(&bases, &mut command).unwrap(), None);
+    }
+
+    #[test]
+    fn fzf_cannot_select_an_unknown_branch() {
+        let bases = vec![WorktreeBase::LocalBranch("main".to_string())];
+        let mut command = shell_test_command("printf 'missing\\n'");
+
+        assert_eq!(
+            run_fzf_base_selector(&bases, &mut command).unwrap_err(),
+            "fzf returned unknown base branch 'missing'"
+        );
+    }
+
+    #[test]
+    fn missing_fzf_reports_how_to_resolve_the_dependency() {
+        let bases = vec![WorktreeBase::LocalBranch("main".to_string())];
+        let mut command = Command::new("/path/that/does/not/exist/fzf");
+
+        assert_eq!(
+            run_fzf_base_selector(&bases, &mut command).unwrap_err(),
+            "fzf is required for interactive branch selection; install fzf and try again"
+        );
+    }
+
+    fn shell_test_command(script: &str) -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", script, "fzf"]);
+        command
     }
 }

@@ -93,7 +93,7 @@ fn creates_worktree_from_selected_local_branch() {
 }
 
 #[test]
-fn lists_the_five_most_active_local_branches_after_origin_main() {
+fn lists_all_local_branches_by_most_recent_activity() {
     let temp_dir = tempdir().unwrap();
     let repo = initialized_repo(&temp_dir);
 
@@ -109,14 +109,15 @@ fn lists_the_five_most_active_local_branches_after_origin_main() {
     }
 
     assert_eq!(
-        list_worktree_bases(&repo, 5).unwrap(),
+        list_worktree_bases(&repo).unwrap(),
         vec![
-            WorktreeBase::OriginMain,
             WorktreeBase::LocalBranch("activity-6".to_string()),
             WorktreeBase::LocalBranch("activity-5".to_string()),
             WorktreeBase::LocalBranch("activity-4".to_string()),
             WorktreeBase::LocalBranch("activity-3".to_string()),
             WorktreeBase::LocalBranch("activity-2".to_string()),
+            WorktreeBase::LocalBranch("activity-1".to_string()),
+            WorktreeBase::LocalBranch("main".to_string()),
         ]
     );
 }
