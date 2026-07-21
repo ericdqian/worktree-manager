@@ -12,7 +12,6 @@ use worktree_manager::{
     resolve_worktree_name,
 };
 
-const RECENT_LOCAL_BRANCH_LIMIT: usize = 5;
 const BASE_SELECTOR_PROMPT: &str = "Base branch:";
 const CONTROL_N: char = '\u{e}';
 const CONTROL_P: char = '\u{10}';
@@ -106,7 +105,7 @@ fn prompt_worktree_base(cwd: &Path) -> Result<WorktreeBase, String> {
         return Ok(WorktreeBase::OriginMain);
     }
 
-    let bases = list_worktree_bases(cwd, RECENT_LOCAL_BRANCH_LIMIT)?;
+    let bases = list_worktree_bases(cwd)?;
     let selected_index = interact_with_base_selector(&bases)?;
 
     Ok(bases[selected_index].clone())
