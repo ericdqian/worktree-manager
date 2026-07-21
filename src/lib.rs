@@ -67,6 +67,24 @@ pub fn list_worktree_bases(cwd: &Path) -> Result<Vec<WorktreeBase>, String> {
         .collect())
 }
 
+pub fn current_worktree_base(cwd: &Path) -> Result<Option<WorktreeBase>, String> {
+    let output = git_status(cwd, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+
+    if output.status.success() {
+        let branch_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return Ok(Some(WorktreeBase::LocalBranch(branch_name)));
+    }
+
+    if output.status.code() == Some(1) {
+        return Ok(None);
+    }
+
+    Err(format!(
+        "failed to determine the checked-out branch: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct GitContext {
     repo_root: PathBuf,

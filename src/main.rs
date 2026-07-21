@@ -7,8 +7,8 @@ use std::{
     process::{Command, ExitCode, Stdio},
 };
 use worktree_manager::{
-    CONFIG_FILE_NAME, WorktreeBase, create_and_setup_worktree_from_base, list_worktree_bases,
-    resolve_worktree_name,
+    CONFIG_FILE_NAME, WorktreeBase, create_and_setup_worktree_from_base, current_worktree_base,
+    list_worktree_bases, resolve_worktree_name,
 };
 
 const SHELL_INIT: &str = r#"wt() {
@@ -95,16 +95,21 @@ fn prompt_worktree_base(cwd: &Path) -> Result<Option<WorktreeBase>, String> {
     }
 
     let bases = list_worktree_bases(cwd)?;
-    select_worktree_base_with_fzf(&bases)
+    let current_base = current_worktree_base(cwd)?;
+    select_worktree_base_with_fzf(&bases, current_base.as_ref())
 }
 
-fn select_worktree_base_with_fzf(bases: &[WorktreeBase]) -> Result<Option<WorktreeBase>, String> {
+fn select_worktree_base_with_fzf(
+    bases: &[WorktreeBase],
+    default_base: Option<&WorktreeBase>,
+) -> Result<Option<WorktreeBase>, String> {
     let mut fzf_command = Command::new("fzf");
-    run_fzf_base_selector(bases, &mut fzf_command)
+    run_fzf_base_selector(bases, default_base, &mut fzf_command)
 }
 
 fn run_fzf_base_selector(
     bases: &[WorktreeBase],
+    default_base: Option<&WorktreeBase>,
     fzf_command: &mut Command,
 ) -> Result<Option<WorktreeBase>, String> {
     if bases.is_empty() {
@@ -113,14 +118,21 @@ fn run_fzf_base_selector(
         );
     }
 
+    fzf_command.args([
+        "--height=40%",
+        "--layout=reverse",
+        "--border",
+        "--no-multi",
+        "--prompt=Base branch: ",
+    ]);
+
+    if let Some(position) =
+        default_base.and_then(|default_base| bases.iter().position(|base| base == default_base))
+    {
+        fzf_command.arg(format!("--bind=load:pos({})", position + 1));
+    }
+
     let mut fzf = fzf_command
-        .args([
-            "--height=40%",
-            "--layout=reverse",
-            "--border",
-            "--no-multi",
-            "--prompt=Base branch: ",
-        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -218,8 +230,31 @@ mod tests {
         let mut command = shell_test_command("sed -n '2p'");
 
         assert_eq!(
-            run_fzf_base_selector(&bases, &mut command).unwrap(),
+            run_fzf_base_selector(&bases, None, &mut command).unwrap(),
             Some(WorktreeBase::LocalBranch("feature-a".to_string()))
+        );
+    }
+
+    #[test]
+    fn fzf_defaults_to_the_current_local_branch() {
+        let bases = vec![
+            WorktreeBase::LocalBranch("newest".to_string()),
+            WorktreeBase::LocalBranch("current".to_string()),
+            WorktreeBase::LocalBranch("oldest".to_string()),
+        ];
+        let mut command = shell_test_command(
+            r#"for argument do
+                if [ "$argument" = "--bind=load:pos(2)" ]; then
+                    sed -n '2p'
+                    exit
+                fi
+            done
+            exit 1"#,
+        );
+
+        assert_eq!(
+            run_fzf_base_selector(&bases, Some(&bases[1]), &mut command).unwrap(),
+            Some(WorktreeBase::LocalBranch("current".to_string()))
         );
     }
 
@@ -228,7 +263,10 @@ mod tests {
         let bases = vec![WorktreeBase::LocalBranch("main".to_string())];
         let mut command = shell_test_command("exit 130");
 
-        assert_eq!(run_fzf_base_selector(&bases, &mut command).unwrap(), None);
+        assert_eq!(
+            run_fzf_base_selector(&bases, None, &mut command).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -237,7 +275,7 @@ mod tests {
         let mut command = shell_test_command("printf 'missing\\n'");
 
         assert_eq!(
-            run_fzf_base_selector(&bases, &mut command).unwrap_err(),
+            run_fzf_base_selector(&bases, None, &mut command).unwrap_err(),
             "fzf returned unknown base branch 'missing'"
         );
     }
@@ -248,7 +286,7 @@ mod tests {
         let mut command = Command::new("/path/that/does/not/exist/fzf");
 
         assert_eq!(
-            run_fzf_base_selector(&bases, &mut command).unwrap_err(),
+            run_fzf_base_selector(&bases, None, &mut command).unwrap_err(),
             "fzf is required for interactive branch selection; install fzf and try again"
         );
     }
