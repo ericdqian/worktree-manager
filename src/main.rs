@@ -1,5 +1,4 @@
 use clap::Parser;
-use dialoguer::Input;
 use std::{
     env, fs,
     io::{self, IsTerminal, Write},
@@ -8,7 +7,7 @@ use std::{
 };
 use worktree_manager::{
     CONFIG_FILE_NAME, WorktreeBase, create_and_setup_worktree_from_base, current_worktree_base,
-    list_worktree_bases, resolve_worktree_name,
+    generate_random_name, list_worktree_bases, resolve_worktree_name,
 };
 
 const SHELL_INIT: &str = r#"wt() {
@@ -37,6 +36,10 @@ const SHELL_INIT: &str = r#"wt() {
 struct Cli {
     #[command(subcommand)]
     command: Option<CliCommand>,
+
+    /// Name the new worktree instead of generating one.
+    #[arg(short, long, value_name = "NAME")]
+    name: Option<String>,
 
     #[arg(long, hide = true, value_name = "PATH")]
     created_path_file: Option<std::path::PathBuf>,
@@ -68,7 +71,11 @@ fn run(cli: Cli) -> Result<(), String> {
     let Some(base) = prompt_worktree_base(&cwd)? else {
         return Ok(());
     };
-    let worktree_name = prompt_worktree_name()?;
+    let worktree_name = cli
+        .name
+        .as_deref()
+        .map(resolve_worktree_name)
+        .unwrap_or_else(generate_random_name);
     let outcome = create_and_setup_worktree_from_base(&cwd, &worktree_name, &base)?;
 
     if outcome.config_missing {
@@ -183,25 +190,6 @@ fn run_fzf_base_selector(
         .cloned()
         .map(Some)
         .ok_or_else(|| format!("fzf returned unknown base branch '{selected_branch}'"))
-}
-
-fn prompt_worktree_name() -> Result<String, String> {
-    if !io::stdin().is_terminal() {
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .map_err(|error| format!("failed to read worktree name: {error}"))?;
-
-        return Ok(resolve_worktree_name(&input));
-    }
-
-    let input = Input::<String>::new()
-        .with_prompt("Worktree name (blank for random)")
-        .allow_empty(true)
-        .interact_text()
-        .map_err(|error| format!("failed to read worktree name: {error}"))?;
-
-    Ok(resolve_worktree_name(&input))
 }
 
 fn write_created_path(created_path_file: &Path, worktree_path: &Path) -> Result<(), String> {
