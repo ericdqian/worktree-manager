@@ -1,9 +1,9 @@
 # worktree-manager
 
 `worktree-manager` is a small CLI for creating Git worktrees for AI agent work.
-Run it from inside a Git work tree, choose a base branch and worktree name, and
-it creates a sibling worktree with a matching branch before running optional
-setup commands.
+Run it from inside a Git work tree, choose a base branch, and it creates a
+sibling worktree with a random matching branch before running optional setup
+commands. Pass `--name` when you want to choose that name yourself.
 
 ## Installation
 
@@ -60,20 +60,20 @@ The branch list uses the repository's existing local refs and does not include
 or fetch remote branches. When stdin is not a terminal, the CLI skips the
 selector and uses `origin/main`.
 
-The CLI then prompts for a worktree name:
+The CLI then generates a random 10-character slug for the worktree name; it
+does not prompt for one. Generated names do not use a fixed prefix.
 
-```text
-Worktree name (blank for random):
+To explicitly choose a name, pass `--name` (or `-n`) when invoking the command:
+
+```sh
+worktree-manager --name fix-login
 ```
 
-Enter a path-safe name such as `fix-login` to create:
+This creates:
 
 ```text
 .worktrees/fix-login
 ```
-
-Press Enter without a name to generate a random 10-character slug. Generated
-names do not use a fixed prefix.
 
 Worktrees are created inside the repository's `.worktrees/` directory. The CLI
 adds `/.worktrees/` to the repository's local `.git/info/exclude`, so generated

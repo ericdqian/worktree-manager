@@ -18,7 +18,7 @@ fn creates_worktree_and_runs_setup_commands() {
     write_config(&repo, r#"{"setupCommands":["echo setup > setup.txt"]}"#);
 
     worktree_command(&repo)
-        .write_stdin("feature-a\n")
+        .args(["--name", "feature-a"])
         .assert()
         .success()
         .stdout(predicate::str::contains("created worktree 'feature-a'"))
@@ -40,7 +40,7 @@ fn setup_commands_receive_primary_repository_root() {
     );
 
     worktree_command(&repo)
-        .write_stdin("feature-a\n")
+        .args(["--name", "feature-a"])
         .assert()
         .success();
 
@@ -60,7 +60,7 @@ fn creates_worktree_from_origin_main_instead_of_current_head() {
     );
 
     worktree_command(&repo)
-        .write_stdin("feature-a\n")
+        .args(["--name", "feature-a"])
         .assert()
         .success();
 
@@ -144,12 +144,12 @@ fn detached_head_has_no_current_local_branch() {
 }
 
 #[test]
-fn blank_name_generates_random_slug_without_fixed_agent_prefix() {
+fn default_name_is_random_and_does_not_consume_stdin() {
     let temp_dir = tempdir().unwrap();
     let repo = initialized_repo(&temp_dir);
 
     let output = worktree_command(&repo)
-        .write_stdin("\n")
+        .write_stdin("stdin-name-is-ignored\n")
         .assert()
         .success()
         .get_output()
@@ -161,6 +161,7 @@ fn blank_name_generates_random_slug_without_fixed_agent_prefix() {
 
     assert_eq!(name.len(), 10);
     assert!(!name.starts_with("agent-"));
+    assert_ne!(name, "stdin-name-is-ignored");
     assert!(worktree_path(&repo, name).exists());
 }
 
@@ -171,8 +172,12 @@ fn writes_created_worktree_path_for_shell_integration() {
     let path_file = temp_dir.path().join("created-worktree-path");
 
     worktree_command(&repo)
-        .args(["--created-path-file", path_file.to_str().unwrap()])
-        .write_stdin("feature-a\n")
+        .args([
+            "--name",
+            "feature-a",
+            "--created-path-file",
+            path_file.to_str().unwrap(),
+        ])
         .assert()
         .success();
 
@@ -208,7 +213,7 @@ fn fails_outside_git_work_tree() {
     let temp_dir = tempdir().unwrap();
 
     worktree_command(temp_dir.path())
-        .write_stdin("feature-a\n")
+        .args(["--name", "feature-a"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -222,7 +227,7 @@ fn missing_config_warns_and_skips_setup() {
     let repo = initialized_repo(&temp_dir);
 
     worktree_command(&repo)
-        .write_stdin("feature-a\n")
+        .args(["--name", "feature-a"])
         .assert()
         .success()
         .stderr(predicate::str::contains(format!(
@@ -240,7 +245,7 @@ fn invalid_config_fails_before_creating_worktree() {
     write_config(&repo, "{");
 
     worktree_command(&repo)
-        .write_stdin("feature-a\n")
+        .args(["--name", "feature-a"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("failed to parse"));
@@ -255,7 +260,7 @@ fn existing_branch_fails_before_creating_worktree() {
     run_git(&repo, &["branch", "feature-a"]);
 
     worktree_command(&repo)
-        .write_stdin("feature-a\n")
+        .args(["--name", "feature-a"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -272,7 +277,7 @@ fn existing_target_path_fails_before_creating_worktree() {
     fs::create_dir_all(worktree_path(&repo, "feature-a")).unwrap();
 
     worktree_command(&repo)
-        .write_stdin("feature-a\n")
+        .args(["--name", "feature-a"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("target path already exists"));
@@ -285,7 +290,7 @@ fn missing_origin_main_fails_before_creating_worktree() {
     run_git(&repo, &["update-ref", "-d", "refs/remotes/origin/main"]);
 
     worktree_command(&repo)
-        .write_stdin("feature-a\n")
+        .args(["--name", "feature-a"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -302,7 +307,7 @@ fn setup_command_failure_leaves_worktree_for_inspection() {
     write_config(&repo, r#"{"setupCommands":["exit 7"]}"#);
 
     worktree_command(&repo)
-        .write_stdin("feature-a\n")
+        .args(["--name", "feature-a"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
