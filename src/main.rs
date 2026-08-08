@@ -2,12 +2,14 @@ use clap::Parser;
 use std::{
     env, fs,
     io::{self, IsTerminal, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, ExitCode, Stdio},
 };
 use worktree_manager::{
-    CONFIG_FILE_NAME, WorktreeBase, create_and_setup_worktree_from_base, current_worktree_base,
-    generate_random_name, list_worktree_bases, resolve_worktree_name,
+    BACKGROUND_SETUP_WORKER_COMMAND, CONFIG_FILE_NAME, WorktreeBase,
+    create_and_setup_worktree_from_base, current_worktree_base, generate_random_name,
+    list_worktree_bases, resolve_worktree_name, run_background_setup_worker,
+    start_background_setup,
 };
 
 const SHELL_INIT: &str = r#"wt() {
@@ -49,6 +51,21 @@ struct Cli {
 enum CliCommand {
     /// Print the zsh/bash integration script.
     ShellInit,
+
+    #[command(name = BACKGROUND_SETUP_WORKER_COMMAND, hide = true)]
+    RunBackgroundSetup {
+        #[arg(long)]
+        repository_root: PathBuf,
+
+        #[arg(long)]
+        worktree_path: PathBuf,
+
+        #[arg(long)]
+        status_path: PathBuf,
+
+        #[arg(long = "setup-command", required = true)]
+        setup_commands: Vec<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -62,9 +79,26 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<(), String> {
-    if let Some(CliCommand::ShellInit) = cli.command {
-        println!("{SHELL_INIT}");
-        return Ok(());
+    match cli.command {
+        Some(CliCommand::ShellInit) => {
+            println!("{SHELL_INIT}");
+            return Ok(());
+        }
+        Some(CliCommand::RunBackgroundSetup {
+            repository_root,
+            worktree_path,
+            status_path,
+            setup_commands,
+        }) => {
+            run_background_setup_worker(
+                &repository_root,
+                &worktree_path,
+                &status_path,
+                &setup_commands,
+            )?;
+            return Ok(());
+        }
+        None => {}
     }
 
     let cwd = env::current_dir().map_err(|error| format!("failed to determine cwd: {error}"))?;
@@ -77,6 +111,17 @@ fn run(cli: Cli) -> Result<(), String> {
         .map(resolve_worktree_name)
         .unwrap_or_else(generate_random_name);
     let outcome = create_and_setup_worktree_from_base(&cwd, &worktree_name, &base)?;
+    let background_setup = outcome
+        .background_setup
+        .as_ref()
+        .map(|setup| {
+            let worker_executable = env::current_exe()
+                .map_err(|error| format!("failed to locate current executable: {error}"))?;
+            let worker_pid = start_background_setup(&worker_executable, setup)?;
+
+            Ok::<_, String>((setup, worker_pid))
+        })
+        .transpose()?;
 
     if outcome.config_missing {
         eprintln!("warning: {CONFIG_FILE_NAME} not found; skipping setup commands");
@@ -91,6 +136,15 @@ fn run(cli: Cli) -> Result<(), String> {
 
     if outcome.setup_commands_run > 0 {
         println!("ran {} setup command(s)", outcome.setup_commands_run);
+    }
+
+    if let Some((setup, worker_pid)) = background_setup {
+        println!(
+            "started {} background setup command(s) (pid {worker_pid})",
+            setup.commands.len()
+        );
+        println!("setup status: {}", setup.status_path.display());
+        println!("setup log: {}", setup.log_path.display());
     }
 
     Ok(())

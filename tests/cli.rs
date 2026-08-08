@@ -4,6 +4,8 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
+    thread,
+    time::{Duration, Instant},
 };
 use tempfile::{TempDir, tempdir};
 use worktree_manager::{
@@ -48,6 +50,76 @@ fn setup_commands_receive_primary_repository_root() {
         fs::read_to_string(worktree_path(&repo, "feature-a").join("setup-repo-root.txt")).unwrap(),
         fs::canonicalize(repo).unwrap().display().to_string(),
     );
+}
+
+#[test]
+fn starts_background_setup_without_waiting_for_it_to_finish() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+    write_config(
+        &repo,
+        r#"{"backgroundSetupCommands":["echo started; sleep 2; echo finished"]}"#,
+    );
+
+    let started_at = Instant::now();
+    let output = worktree_command(&repo)
+        .args(["--name", "feature-a"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "started 1 background setup command(s)",
+        ))
+        .get_output()
+        .stdout
+        .clone();
+
+    assert!(
+        started_at.elapsed() < Duration::from_secs(1),
+        "CLI waited for the background setup command"
+    );
+
+    let stdout = String::from_utf8(output).unwrap();
+    let status_path = reported_path(&stdout, "setup status: ");
+    let log_path = reported_path(&stdout, "setup log: ");
+    wait_for_file_contents(&status_path, "succeeded\n");
+
+    assert_eq!(fs::read_to_string(status_path).unwrap(), "succeeded\n");
+    assert_eq!(fs::read_to_string(log_path).unwrap(), "started\nfinished\n");
+}
+
+#[test]
+fn background_setup_failure_does_not_fail_worktree_creation() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+    write_config(
+        &repo,
+        r#"{"backgroundSetupCommands":["echo failing; exit 7"]}"#,
+    );
+
+    let output = worktree_command(&repo)
+        .args(["--name", "feature-a"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).unwrap();
+    let status_path = reported_path(&stdout, "setup status: ");
+    let log_path = reported_path(&stdout, "setup log: ");
+    wait_for_file_prefix(&status_path, "failed\n");
+
+    assert!(
+        fs::read_to_string(status_path)
+            .unwrap()
+            .contains("failed with status")
+    );
+    assert!(
+        fs::read_to_string(log_path)
+            .unwrap()
+            .contains("setup command 'echo failing; exit 7' failed with status")
+    );
+    assert!(worktree_path(&repo, "feature-a").exists());
 }
 
 #[test]
@@ -396,6 +468,39 @@ fn created_worktree_name(stdout: &str) -> &str {
         .nth(1)
         .and_then(|suffix| suffix.split('\'').next())
         .unwrap()
+}
+
+fn reported_path(stdout: &str, prefix: &str) -> PathBuf {
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix(prefix))
+        .map(PathBuf::from)
+        .unwrap()
+}
+
+fn wait_for_file_contents(path: &Path, expected_contents: &str) {
+    wait_for_file(path, |contents| contents == expected_contents);
+}
+
+fn wait_for_file_prefix(path: &Path, expected_prefix: &str) {
+    wait_for_file(path, |contents| contents.starts_with(expected_prefix));
+}
+
+fn wait_for_file(path: &Path, predicate: impl Fn(&str) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+
+    loop {
+        if fs::read_to_string(path).is_ok_and(|contents| predicate(&contents)) {
+            return;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {}",
+            path.display()
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
 }
 
 fn worktree_path(repo: &Path, worktree_name: &str) -> PathBuf {

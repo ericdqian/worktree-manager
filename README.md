@@ -86,13 +86,29 @@ Place `agent-worktree.config.json` at the repository root:
 
 ```json
 {
-  "setupCommands": ["cargo fetch"]
+  "setupCommands": [
+    "cp \"$WORKTREE_MANAGER_REPO_ROOT/.env\" ./.env"
+  ],
+  "backgroundSetupCommands": ["cargo fetch"]
 }
 ```
 
 `setupCommands` run sequentially in the new worktree through the platform shell.
 Command output streams directly to the terminal. If a command fails, the CLI
 returns a nonzero exit code and leaves the worktree in place for inspection.
+
+`backgroundSetupCommands` also run sequentially, but in a detached worker after
+all foreground setup commands succeed. This is useful for slow dependency
+operations such as `cargo fetch`, `npm install`, or `pnpm install`. The CLI
+returns as soon as the worker starts, allowing the `wt` shell integration to
+enter the new worktree while dependencies install.
+
+Background command output is written to a log under the repository's Git
+metadata instead of being mixed into the terminal. The CLI prints the log and
+status paths when it starts the worker. The status file contains `pending`,
+`running`, `succeeded`, or `failed`; on failure, it also includes the error.
+Because failures can happen after the CLI returns, they do not change the
+worktree creation command's exit code.
 
 Each setup command receives `WORKTREE_MANAGER_REPO_ROOT`, the absolute path of
 the primary repository checkout from which the worktree was created. Use it to
