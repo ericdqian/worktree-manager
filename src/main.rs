@@ -185,6 +185,7 @@ fn run_fzf_base_selector(
         "--border",
         "--no-multi",
         "--prompt=Base branch: ",
+        "--bind=change:first",
     ]);
 
     if let Some(position) =
@@ -297,6 +298,28 @@ mod tests {
         assert_eq!(
             run_fzf_base_selector(&bases, Some(&bases[1]), &mut command).unwrap(),
             Some(WorktreeBase::LocalBranch("current".to_string()))
+        );
+    }
+
+    #[test]
+    fn fzf_moves_to_the_first_match_when_the_query_changes() {
+        let bases = vec![
+            WorktreeBase::LocalBranch("newest".to_string()),
+            WorktreeBase::LocalBranch("current".to_string()),
+        ];
+        let mut command = shell_test_command(
+            r#"for argument do
+                if [ "$argument" = "--bind=change:first" ]; then
+                    sed -n '1p'
+                    exit
+                fi
+            done
+            exit 1"#,
+        );
+
+        assert_eq!(
+            run_fzf_base_selector(&bases, Some(&bases[1]), &mut command).unwrap(),
+            Some(WorktreeBase::LocalBranch("newest".to_string()))
         );
     }
 
