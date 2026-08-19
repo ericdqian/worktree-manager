@@ -54,7 +54,8 @@ Type to filter the branches, move through matches with the arrow keys or
 `Ctrl+N`/`Ctrl+P`, and press Enter to confirm the highlighted branch. Press
 Escape or `Ctrl+C` to cancel without creating a worktree. The branch checked
 out in the work tree where the command is running is highlighted by default
-while the list remains ordered by recent activity.
+while the list remains ordered by recent activity. Once you start or change a
+search, the highlighted cursor moves to the top match.
 
 The branch list uses the repository's existing local refs and does not include
 or fetch remote branches. When stdin is not a terminal, the CLI skips the
