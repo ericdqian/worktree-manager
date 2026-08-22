@@ -6,10 +6,10 @@ use std::{
     process::{Command, ExitCode, Stdio},
 };
 use worktree_manager::{
-    BACKGROUND_SETUP_WORKER_COMMAND, CONFIG_FILE_NAME, WorktreeBase,
-    create_and_setup_worktree_from_base, current_worktree_base, generate_random_name,
-    list_worktree_bases, resolve_worktree_name, run_background_setup_worker,
-    start_background_setup,
+    BACKGROUND_SETUP_WORKER_COMMAND, BranchOutcome, CONFIG_FILE_NAME, ManagedWorktree,
+    WorktreeBase, create_and_setup_worktree_from_base, current_worktree_base, generate_random_name,
+    list_managed_worktrees, list_worktree_bases, main_worktree_root, prune_worktree_metadata,
+    remove_worktree, resolve_worktree_name, run_background_setup_worker, start_background_setup,
 };
 
 const SHELL_INIT: &str = r#"wt() {
@@ -49,6 +49,17 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum CliCommand {
+    /// Remove worktrees created by this tool, along with their branches.
+    Clean {
+        /// Remove the named worktree instead of selecting one interactively.
+        #[arg(short, long, value_name = "NAME")]
+        name: Vec<String>,
+
+        /// Remove worktrees with uncommitted changes and delete unmerged branches.
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Print the zsh/bash integration script.
     ShellInit,
 
@@ -79,7 +90,12 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<(), String> {
+    let cwd = env::current_dir().map_err(|error| format!("failed to determine cwd: {error}"))?;
+
     match cli.command {
+        Some(CliCommand::Clean { name, force }) => {
+            return run_clean(&cwd, &name, force);
+        }
         Some(CliCommand::ShellInit) => {
             println!("{SHELL_INIT}");
             return Ok(());
@@ -101,7 +117,6 @@ fn run(cli: Cli) -> Result<(), String> {
         None => {}
     }
 
-    let cwd = env::current_dir().map_err(|error| format!("failed to determine cwd: {error}"))?;
     let Some(base) = prompt_worktree_base(&cwd)? else {
         return Ok(());
     };
@@ -260,6 +275,233 @@ fn write_created_path(created_path_file: &Path, worktree_path: &Path) -> Result<
     })
 }
 
+fn run_clean(cwd: &Path, names: &[String], force: bool) -> Result<(), String> {
+    let repository_root = main_worktree_root(cwd)?;
+    prune_worktree_metadata(&repository_root)?;
+
+    let worktrees = list_managed_worktrees(&repository_root)?;
+    if worktrees.is_empty() {
+        println!("no worktrees to clean up");
+        return Ok(());
+    }
+
+    let selected_worktrees = select_worktrees_to_remove(cwd, &worktrees, names)?;
+    if selected_worktrees.is_empty() || !confirm_removal(&selected_worktrees, force)? {
+        return Ok(());
+    }
+
+    remove_selected_worktrees(&repository_root, &selected_worktrees, force)
+}
+
+fn select_worktrees_to_remove(
+    cwd: &Path,
+    worktrees: &[ManagedWorktree],
+    names: &[String],
+) -> Result<Vec<ManagedWorktree>, String> {
+    if !names.is_empty() {
+        return names
+            .iter()
+            .map(|name| find_worktree_by_name(worktrees, name))
+            .collect();
+    }
+
+    if !io::stdin().is_terminal() {
+        return Err(
+            "cannot select worktrees without a terminal; pass --name to choose one".to_string(),
+        );
+    }
+
+    let current_directory = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let current_worktree = worktrees
+        .iter()
+        .find(|worktree| current_directory.starts_with(&worktree.path));
+
+    select_worktrees_with_fzf(worktrees, current_worktree)
+}
+
+fn find_worktree_by_name(
+    worktrees: &[ManagedWorktree],
+    name: &str,
+) -> Result<ManagedWorktree, String> {
+    worktrees
+        .iter()
+        .find(|worktree| worktree.name == name)
+        .cloned()
+        .ok_or_else(|| format!("no worktree named '{name}' in .worktrees/"))
+}
+
+fn select_worktrees_with_fzf(
+    worktrees: &[ManagedWorktree],
+    current_worktree: Option<&ManagedWorktree>,
+) -> Result<Vec<ManagedWorktree>, String> {
+    let mut fzf_command = Command::new("fzf");
+    run_fzf_worktree_selector(worktrees, current_worktree, &mut fzf_command)
+}
+
+fn run_fzf_worktree_selector(
+    worktrees: &[ManagedWorktree],
+    current_worktree: Option<&ManagedWorktree>,
+    fzf_command: &mut Command,
+) -> Result<Vec<ManagedWorktree>, String> {
+    fzf_command.args([
+        "--height=40%",
+        "--layout=reverse",
+        "--border",
+        "--multi",
+        "--prompt=Remove worktrees: ",
+        "--header=Tab selects multiple",
+        "--bind=change:first",
+    ]);
+
+    if let Some(position) = current_worktree
+        .and_then(|current_worktree| worktrees.iter().position(|w| w == current_worktree))
+    {
+        fzf_command.arg(format!("--bind=load:pos({})", position + 1));
+    }
+
+    let rows = worktree_rows(worktrees);
+    let mut fzf = fzf_command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                "fzf is required for interactive worktree selection; install fzf and try again"
+                    .to_string()
+            } else {
+                format!("failed to start fzf for worktree selection: {error}")
+            }
+        })?;
+
+    let write_result: Result<(), String> = (|| {
+        let mut fzf_input = fzf
+            .stdin
+            .take()
+            .ok_or_else(|| "failed to open fzf input".to_string())?;
+
+        for (row, _) in &rows {
+            writeln!(fzf_input, "{row}")
+                .map_err(|error| format!("failed to send worktrees to fzf: {error}"))?;
+        }
+
+        Ok(())
+    })();
+
+    let output = fzf
+        .wait_with_output()
+        .map_err(|error| format!("failed to wait for fzf worktree selection: {error}"))?;
+
+    if output.status.code() == Some(130) {
+        return Ok(Vec::new());
+    }
+
+    if !output.status.success() {
+        return Err(format!(
+            "fzf worktree selection failed with status {}",
+            output.status
+        ));
+    }
+
+    write_result?;
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|selected_row| {
+            rows.iter()
+                .find(|(row, _)| row == selected_row)
+                .map(|(_, worktree)| (*worktree).clone())
+                .ok_or_else(|| format!("fzf returned unknown worktree '{selected_row}'"))
+        })
+        .collect()
+}
+
+fn worktree_rows(worktrees: &[ManagedWorktree]) -> Vec<(String, &ManagedWorktree)> {
+    let name_width = worktrees
+        .iter()
+        .map(|worktree| worktree.name.len())
+        .max()
+        .unwrap_or_default();
+
+    worktrees
+        .iter()
+        .map(|worktree| {
+            let branch = worktree.branch.as_deref().unwrap_or("(detached)");
+
+            (format!("{:name_width$}  {branch}", worktree.name), worktree)
+        })
+        .collect()
+}
+
+fn confirm_removal(worktrees: &[ManagedWorktree], force: bool) -> Result<bool, String> {
+    // Scripted runs pass --name explicitly, so only a terminal session is asked to confirm.
+    if !io::stdin().is_terminal() {
+        return Ok(true);
+    }
+
+    for worktree in worktrees {
+        println!("{}", worktree.path.display());
+    }
+
+    let force_note = if force { " (force)" } else { "" };
+    print!("Remove {} worktree(s){force_note}? [y/N] ", worktrees.len());
+    io::stdout()
+        .flush()
+        .map_err(|error| format!("failed to write confirmation prompt: {error}"))?;
+
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .map_err(|error| format!("failed to read confirmation: {error}"))?;
+
+    Ok(confirmation_is_affirmative(&answer))
+}
+
+fn confirmation_is_affirmative(answer: &str) -> bool {
+    matches!(answer.trim(), "y" | "Y")
+}
+
+fn remove_selected_worktrees(
+    repository_root: &Path,
+    worktrees: &[ManagedWorktree],
+    force: bool,
+) -> Result<(), String> {
+    let mut failures = 0;
+
+    for worktree in worktrees {
+        match remove_worktree(repository_root, worktree, force) {
+            Ok(branch_outcome) => {
+                println!("removed worktree '{}'", worktree.name);
+
+                if let Some(message) = branch_outcome_message(&branch_outcome) {
+                    println!("{message}");
+                }
+            }
+            // Keep going so one blocked worktree does not strand the rest of the selection.
+            Err(error) => {
+                eprintln!("error: {error}");
+                failures += 1;
+            }
+        }
+    }
+
+    if failures > 0 {
+        return Err(format!(
+            "failed to remove {failures} of {} worktree(s)",
+            worktrees.len()
+        ));
+    }
+
+    Ok(())
+}
+
+fn branch_outcome_message(branch_outcome: &BranchOutcome) -> Option<String> {
+    match branch_outcome {
+        BranchOutcome::Deleted(branch) => Some(format!("deleted branch '{branch}'")),
+        BranchOutcome::Kept { branch, reason } => Some(format!("kept branch '{branch}': {reason}")),
+        BranchOutcome::NoBranch => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,6 +596,89 @@ mod tests {
             run_fzf_base_selector(&bases, None, &mut command).unwrap_err(),
             "fzf is required for interactive branch selection; install fzf and try again"
         );
+    }
+
+    #[test]
+    fn fzf_selects_multiple_worktrees() {
+        let worktrees = managed_worktrees();
+        let mut command = shell_test_command(
+            r#"for argument do
+                if [ "$argument" = "--multi" ]; then
+                    sed -n '1p;2p'
+                    exit
+                fi
+            done
+            exit 1"#,
+        );
+
+        assert_eq!(
+            run_fzf_worktree_selector(&worktrees, None, &mut command).unwrap(),
+            worktrees
+        );
+    }
+
+    #[test]
+    fn fzf_defaults_to_the_worktree_the_command_runs_from() {
+        let worktrees = managed_worktrees();
+        let mut command = shell_test_command(
+            r#"for argument do
+                if [ "$argument" = "--bind=load:pos(2)" ]; then
+                    sed -n '2p'
+                    exit
+                fi
+            done
+            exit 1"#,
+        );
+
+        assert_eq!(
+            run_fzf_worktree_selector(&worktrees, Some(&worktrees[1]), &mut command).unwrap(),
+            vec![worktrees[1].clone()]
+        );
+    }
+
+    #[test]
+    fn cancelling_fzf_selects_no_worktrees() {
+        let mut command = shell_test_command("exit 130");
+
+        assert_eq!(
+            run_fzf_worktree_selector(&managed_worktrees(), None, &mut command).unwrap(),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn fzf_cannot_select_an_unknown_worktree() {
+        let mut command = shell_test_command("printf 'missing\\n'");
+
+        assert_eq!(
+            run_fzf_worktree_selector(&managed_worktrees(), None, &mut command).unwrap_err(),
+            "fzf returned unknown worktree 'missing'"
+        );
+    }
+
+    #[test]
+    fn removal_is_confirmed_only_by_an_explicit_yes() {
+        assert!(confirmation_is_affirmative("y\n"));
+        assert!(confirmation_is_affirmative("Y\n"));
+
+        for answer in ["", "\n", "n\n", "yes\n", "no\n"] {
+            assert!(!confirmation_is_affirmative(answer), "{answer:?} confirmed");
+        }
+    }
+
+    fn managed_worktrees() -> Vec<ManagedWorktree> {
+        vec![
+            ManagedWorktree {
+                name: "feature-a".to_string(),
+                path: PathBuf::from("/repo/.worktrees/feature-a"),
+                branch: Some("eq/feat/a".to_string()),
+            },
+            ManagedWorktree {
+                name: "b".to_string(),
+                path: PathBuf::from("/repo/.worktrees/b"),
+                branch: None,
+            },
+        ]
     }
 
     fn shell_test_command(script: &str) -> Command {
