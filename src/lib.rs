@@ -372,6 +372,192 @@ pub fn load_config(repo_root: &Path) -> Result<Option<WorktreeConfig>, String> {
         .map_err(|error| format!("failed to parse {}: {error}", config_path.display()))
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedWorktree {
+    pub name: String,
+    pub path: PathBuf,
+    pub branch: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BranchOutcome {
+    Deleted(String),
+    Kept { branch: String, reason: String },
+    NoBranch,
+}
+
+pub fn main_worktree_root(cwd: &Path) -> Result<PathBuf, String> {
+    let git_context = discover_git_context(cwd)?;
+    let git_common_dir = git_output(
+        &git_context.repo_root,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+
+    PathBuf::from(&git_common_dir)
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| format!("Git directory '{git_common_dir}' has no parent work tree"))
+}
+
+pub fn prune_worktree_metadata(main_worktree_root: &Path) -> Result<(), String> {
+    git_output(main_worktree_root, &["worktree", "prune"]).map(|_| ())
+}
+
+pub fn list_managed_worktrees(main_worktree_root: &Path) -> Result<Vec<ManagedWorktree>, String> {
+    let worktree_records = git_output(main_worktree_root, &["worktree", "list", "--porcelain"])?;
+
+    Ok(managed_worktrees_from_porcelain(&worktree_records))
+}
+
+fn managed_worktrees_from_porcelain(porcelain_output: &str) -> Vec<ManagedWorktree> {
+    // Git always lists the main work tree first, so it both locates the managed worktree
+    // directory and drops out of the removable set.
+    let mut records = porcelain_output.split("\n\n");
+    let Some(worktrees_directory) = records
+        .next()
+        .and_then(worktree_record_path)
+        .map(|main_worktree_path| main_worktree_path.join(WORKTREE_DIRECTORY_NAME))
+    else {
+        return Vec::new();
+    };
+
+    records
+        .filter_map(|record| managed_worktree_from_record(record, &worktrees_directory))
+        .collect()
+}
+
+fn worktree_record_path(record: &str) -> Option<PathBuf> {
+    record
+        .lines()
+        .find_map(|line| line.strip_prefix("worktree "))
+        .map(PathBuf::from)
+}
+
+fn managed_worktree_from_record(
+    record: &str,
+    worktrees_directory: &Path,
+) -> Option<ManagedWorktree> {
+    let path = worktree_record_path(record)?;
+
+    if path.parent() != Some(worktrees_directory) {
+        return None;
+    }
+
+    let branch = record
+        .lines()
+        .find_map(|line| line.strip_prefix("branch "))
+        .map(|reference| {
+            reference
+                .strip_prefix("refs/heads/")
+                .unwrap_or(reference)
+                .to_string()
+        });
+
+    Some(ManagedWorktree {
+        name: path.file_name()?.to_string_lossy().into_owned(),
+        path,
+        branch,
+    })
+}
+
+pub fn remove_worktree(
+    main_worktree_root: &Path,
+    worktree: &ManagedWorktree,
+    force: bool,
+) -> Result<BranchOutcome, String> {
+    remove_worktree_directory(main_worktree_root, &worktree.path, force)?;
+    remove_background_setup_artifacts(main_worktree_root, &worktree.name)?;
+
+    match &worktree.branch {
+        Some(branch) => delete_worktree_branch(main_worktree_root, branch, force),
+        None => Ok(BranchOutcome::NoBranch),
+    }
+}
+
+fn remove_worktree_directory(
+    main_worktree_root: &Path,
+    worktree_path: &Path,
+    force: bool,
+) -> Result<(), String> {
+    let mut command = Command::new("git");
+    command.args(["worktree", "remove"]);
+
+    if force {
+        command.arg("--force");
+    }
+
+    let output = command
+        .arg(worktree_path)
+        .current_dir(main_worktree_root)
+        .output()
+        .map_err(|error| format!("failed to start git worktree remove: {error}"))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "failed to remove worktree {}: {}",
+        worktree_path.display(),
+        git_message(&output.stderr)
+    ))
+}
+
+fn remove_background_setup_artifacts(
+    main_worktree_root: &Path,
+    worktree_name: &str,
+) -> Result<(), String> {
+    let setup_directory = git_path(main_worktree_root, BACKGROUND_SETUP_DIRECTORY)?;
+
+    for extension in ["log", "status"] {
+        let artifact_path = setup_directory.join(format!("{worktree_name}.{extension}"));
+
+        match fs::remove_file(&artifact_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "failed to remove background setup file {}: {error}",
+                    artifact_path.display()
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn delete_worktree_branch(
+    main_worktree_root: &Path,
+    branch: &str,
+    force: bool,
+) -> Result<BranchOutcome, String> {
+    let delete_flag = if force { "-D" } else { "-d" };
+    let output = git_status(main_worktree_root, &["branch", delete_flag, branch])?;
+
+    if output.status.success() {
+        return Ok(BranchOutcome::Deleted(branch.to_string()));
+    }
+
+    // Git refuses to delete a branch holding unmerged work, which is the safety net that
+    // lets removal itself stay unguarded; report why instead of failing the removal.
+    Ok(BranchOutcome::Kept {
+        branch: branch.to_string(),
+        reason: git_message(&output.stderr),
+    })
+}
+
+fn git_message(stderr: &[u8]) -> String {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_start_matches("fatal: ")
+        .trim_start_matches("error: ")
+        .to_string()
+}
+
 fn discover_git_context(cwd: &Path) -> Result<GitContext, String> {
     let repo_root = git_output(cwd, &["rev-parse", "--show-toplevel"])
         .map_err(|_| "current directory is not inside a Git work tree".to_string())?;
@@ -684,6 +870,65 @@ mod tests {
             load_config(temp_dir.path())
                 .unwrap_err()
                 .contains("failed to parse")
+        );
+    }
+
+    #[test]
+    fn managed_worktrees_come_from_the_worktree_directory_of_the_main_work_tree() {
+        let porcelain_output = "\
+worktree /repo
+HEAD 1111111111111111111111111111111111111111
+branch refs/heads/main
+
+worktree /repo/.worktrees/feature-a
+HEAD 2222222222222222222222222222222222222222
+branch refs/heads/eq/feat/login
+
+worktree /elsewhere/manual-worktree
+HEAD 3333333333333333333333333333333333333333
+branch refs/heads/manual";
+
+        assert_eq!(
+            managed_worktrees_from_porcelain(porcelain_output),
+            vec![ManagedWorktree {
+                name: "feature-a".to_string(),
+                path: PathBuf::from("/repo/.worktrees/feature-a"),
+                branch: Some("eq/feat/login".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn managed_worktrees_report_a_detached_head_as_having_no_branch() {
+        let porcelain_output = "\
+worktree /repo
+HEAD 1111111111111111111111111111111111111111
+branch refs/heads/main
+
+worktree /repo/.worktrees/feature-a
+HEAD 2222222222222222222222222222222222222222
+detached";
+
+        assert_eq!(
+            managed_worktrees_from_porcelain(porcelain_output),
+            vec![ManagedWorktree {
+                name: "feature-a".to_string(),
+                path: PathBuf::from("/repo/.worktrees/feature-a"),
+                branch: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn managed_worktrees_are_empty_without_any_records() {
+        assert_eq!(managed_worktrees_from_porcelain(""), Vec::new());
+    }
+
+    #[test]
+    fn git_message_uses_the_first_line_without_its_severity_prefix() {
+        assert_eq!(
+            git_message(b"error: the branch 'feature-a' is not fully merged\nhint: use -D\n"),
+            "the branch 'feature-a' is not fully merged"
         );
     }
 }

@@ -389,6 +389,215 @@ fn setup_command_failure_leaves_worktree_for_inspection() {
     assert!(worktree_path(&repo, "feature-a").exists());
 }
 
+#[test]
+fn clean_removes_a_worktree_and_deletes_its_merged_branch() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+
+    worktree_command(&repo)
+        .args(["--name", "feature-a"])
+        .assert()
+        .success();
+
+    worktree_command(&repo)
+        .args(["clean", "--name", "feature-a"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("removed worktree 'feature-a'"))
+        .stdout(predicate::str::contains("deleted branch 'feature-a'"));
+
+    assert!(!worktree_path(&repo, "feature-a").exists());
+    assert!(!worktree_is_registered(&repo, "feature-a"));
+    assert!(!branch_exists(&repo, "feature-a"));
+}
+
+#[test]
+fn clean_keeps_a_branch_that_still_holds_unmerged_commits() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+
+    worktree_command(&repo)
+        .args(["--name", "feature-a"])
+        .assert()
+        .success();
+    run_git(
+        &worktree_path(&repo, "feature-a"),
+        &["commit", "--allow-empty", "-m", "agent work"],
+    );
+
+    worktree_command(&repo)
+        .args(["clean", "--name", "feature-a"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("removed worktree 'feature-a'"))
+        .stdout(predicate::str::contains(
+            "kept branch 'feature-a': the branch 'feature-a' is not fully merged",
+        ));
+
+    assert!(!worktree_path(&repo, "feature-a").exists());
+    assert!(branch_exists(&repo, "feature-a"));
+}
+
+#[test]
+fn clean_refuses_a_worktree_with_uncommitted_changes() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+
+    worktree_command(&repo)
+        .args(["--name", "feature-a"])
+        .assert()
+        .success();
+    fs::write(
+        worktree_path(&repo, "feature-a").join("in-progress.txt"),
+        "unsaved work\n",
+    )
+    .unwrap();
+
+    worktree_command(&repo)
+        .args(["clean", "--name", "feature-a"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "contains modified or untracked files",
+        ))
+        .stderr(predicate::str::contains(
+            "failed to remove 1 of 1 worktree(s)",
+        ));
+
+    assert!(worktree_path(&repo, "feature-a").exists());
+    assert!(branch_exists(&repo, "feature-a"));
+}
+
+#[test]
+fn forced_clean_removes_a_dirty_worktree_and_its_branch() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+
+    worktree_command(&repo)
+        .args(["--name", "feature-a"])
+        .assert()
+        .success();
+    run_git(
+        &worktree_path(&repo, "feature-a"),
+        &["commit", "--allow-empty", "-m", "agent work"],
+    );
+    fs::write(
+        worktree_path(&repo, "feature-a").join("in-progress.txt"),
+        "unsaved work\n",
+    )
+    .unwrap();
+
+    worktree_command(&repo)
+        .args(["clean", "--name", "feature-a", "--force"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("deleted branch 'feature-a'"));
+
+    assert!(!worktree_path(&repo, "feature-a").exists());
+    assert!(!branch_exists(&repo, "feature-a"));
+}
+
+#[test]
+fn clean_removes_background_setup_files() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+    write_config(&repo, r#"{"backgroundSetupCommands":["echo setup"]}"#);
+
+    let stdout = worktree_command(&repo)
+        .args(["--name", "feature-a"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(stdout).unwrap();
+    let status_path = reported_path(&stdout, "setup status: ");
+    let log_path = reported_path(&stdout, "setup log: ");
+    wait_for_file_contents(&status_path, "succeeded\n");
+
+    worktree_command(&repo)
+        .args(["clean", "--name", "feature-a"])
+        .assert()
+        .success();
+
+    assert!(!status_path.exists());
+    assert!(!log_path.exists());
+}
+
+#[test]
+fn clean_removes_every_named_worktree() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+
+    for worktree_name in ["feature-a", "feature-b"] {
+        worktree_command(&repo)
+            .args(["--name", worktree_name])
+            .assert()
+            .success();
+    }
+
+    worktree_command(&repo)
+        .args(["clean", "--name", "feature-a", "--name", "feature-b"])
+        .assert()
+        .success();
+
+    assert!(!worktree_path(&repo, "feature-a").exists());
+    assert!(!worktree_path(&repo, "feature-b").exists());
+}
+
+#[test]
+fn clean_fails_for_an_unknown_worktree_without_removing_anything() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+
+    worktree_command(&repo)
+        .args(["--name", "feature-a"])
+        .assert()
+        .success();
+
+    worktree_command(&repo)
+        .args(["clean", "--name", "missing", "--name", "feature-a"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "no worktree named 'missing' in .worktrees/",
+        ));
+
+    assert!(worktree_path(&repo, "feature-a").exists());
+}
+
+#[test]
+fn clean_without_a_name_requires_a_terminal() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+
+    worktree_command(&repo)
+        .args(["--name", "feature-a"])
+        .assert()
+        .success();
+
+    worktree_command(&repo)
+        .arg("clean")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("pass --name to choose one"));
+
+    assert!(worktree_path(&repo, "feature-a").exists());
+}
+
+#[test]
+fn clean_reports_when_there_is_nothing_to_clean() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+
+    worktree_command(&repo)
+        .arg("clean")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no worktrees to clean up"));
+}
+
 fn worktree_command(cwd: &Path) -> Command {
     let mut command = Command::cargo_bin("worktree-manager").unwrap();
     command.current_dir(cwd);
@@ -505,6 +714,29 @@ fn wait_for_file(path: &Path, predicate: impl Fn(&str) -> bool) {
 
 fn worktree_path(repo: &Path, worktree_name: &str) -> PathBuf {
     repo.join(".worktrees").join(worktree_name)
+}
+
+fn worktree_is_registered(repo: &Path, worktree_name: &str) -> bool {
+    let output = ProcessCommand::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+
+    String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+        line.strip_prefix("worktree ")
+            .is_some_and(|path| Path::new(path).ends_with(worktree_name))
+    })
+}
+
+fn branch_exists(repo: &Path, branch: &str) -> bool {
+    ProcessCommand::new("git")
+        .args(["show-ref", "--verify", "--quiet"])
+        .arg(format!("refs/heads/{branch}"))
+        .current_dir(repo)
+        .status()
+        .unwrap()
+        .success()
 }
 
 fn assert_worktree_directory_is_ignored(repo: &Path) {
