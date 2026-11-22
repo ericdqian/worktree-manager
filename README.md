@@ -32,6 +32,12 @@ the command succeeds. The wrapper invokes `command worktree-manager`, so the
 underlying binary remains unambiguous and can be run directly without the
 directory change.
 
+`dwt` removes the linked worktree the shell is in and exits the shell after
+successful removal. It keeps the branch. Git refuses to remove a worktree with
+uncommitted changes or untracked files unless you pass `dwt --force` (`dwt --f`
+also works). Run `worktree-manager remove-current` to remove the worktree while
+keeping the shell open.
+
 ## Usage
 
 ```sh

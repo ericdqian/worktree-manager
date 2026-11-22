@@ -372,6 +372,34 @@ pub fn load_config(repo_root: &Path) -> Result<Option<WorktreeConfig>, String> {
         .map_err(|error| format!("failed to parse {}: {error}", config_path.display()))
 }
 
+pub fn remove_current_worktree(cwd: &Path, force: bool) -> Result<(), String> {
+    // The relative path up to the root avoids round-tripping the checkout's name through text.
+    let worktree_location =
+        git_output(cwd, &["rev-parse", "--is-inside-work-tree", "--show-cdup"])?;
+    let worktree_path = match worktree_location.split_once('\n') {
+        Some(("true", worktree_root_from_cwd)) => worktree_root_from_cwd,
+        None if worktree_location == "true" => ".",
+        _ => return Err("current directory is not inside a Git work tree".to_string()),
+    };
+
+    let mut remove_args = vec!["worktree", "remove"];
+    if force {
+        remove_args.push("--force");
+    }
+    remove_args.extend(["--", worktree_path]);
+
+    // Git enforces linked-worktree and dirty-file checks for this directory removal.
+    git_output(cwd, &remove_args).map(|_| ()).map_err(|error| {
+        if force {
+            error
+        } else {
+            format!(
+                "{error}\nIf the worktree contains changes you want to discard, retry with --force."
+            )
+        }
+    })
+}
+
 fn discover_git_context(cwd: &Path) -> Result<GitContext, String> {
     let repo_root = git_output(cwd, &["rev-parse", "--show-toplevel"])
         .map_err(|_| "current directory is not inside a Git work tree".to_string())?;
