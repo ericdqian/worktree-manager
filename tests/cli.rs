@@ -281,6 +281,90 @@ fn shell_init_prints_zsh_and_bash_wrapper() {
 }
 
 #[test]
+fn remove_current_removes_only_the_linked_worktree_from_a_subdirectory() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+    let checkout = temp_dir.path().join("linked checkout ");
+    run_git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature-a",
+            checkout.to_str().unwrap(),
+        ],
+    );
+    let checkout_subdirectory = checkout.join("nested");
+    fs::create_dir(&checkout_subdirectory).unwrap();
+    commit_with_date(&checkout, "Keep this commit", "2000-01-02T00:00:00Z");
+    let feature_commit = git_output(&checkout, "HEAD");
+
+    worktree_command(&repo)
+        .args(["remove-current", "--force"])
+        .assert()
+        .failure();
+    worktree_command(&checkout_subdirectory)
+        .arg("remove-current")
+        .assert()
+        .success();
+
+    assert!(repo.join("README.md").is_file());
+    assert!(!checkout.exists());
+    assert_eq!(git_output(&repo, "feature-a"), feature_commit);
+}
+
+#[test]
+fn dwt_keeps_the_shell_open_on_help_or_failure_and_exits_on_success() {
+    let temp_dir = tempdir().unwrap();
+    let repo = initialized_repo(&temp_dir);
+    let bin_directory = Path::new(env!("CARGO_BIN_EXE_worktree-manager"))
+        .parent()
+        .unwrap();
+    let inherited_path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(bin_directory.to_path_buf()).chain(std::env::split_paths(&inherited_path)),
+    )
+    .unwrap();
+
+    for (branch, force_flag) in [("force", "--force"), ("force-alias", "--f")] {
+        let checkout = temp_dir.path().join(branch);
+        run_git(
+            &repo,
+            &["worktree", "add", "-b", branch, checkout.to_str().unwrap()],
+        );
+        fs::write(checkout.join("untracked"), "changes").unwrap();
+
+        Command::new("bash")
+            .current_dir(&checkout)
+            .env("PATH", &path)
+            .args([
+                "-c",
+                r#"
+                eval "$(command worktree-manager shell-init)"
+                dwt "$1" --help || exit 1
+                [ -f untracked ] || exit 2
+                if dwt; then exit 3; fi
+                [ -f untracked ] || exit 4
+                dwt "$1"
+                exit 5
+            "#,
+                "bash",
+                force_flag,
+            ])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(
+                "Usage: worktree-manager remove-current",
+            ))
+            .stderr(predicate::str::contains("retry with --force"));
+
+        assert!(!checkout.exists());
+        assert_eq!(git_output(&repo, branch), git_output(&repo, "HEAD"));
+    }
+}
+
+#[test]
 fn fails_outside_git_work_tree() {
     let temp_dir = tempdir().unwrap();
 

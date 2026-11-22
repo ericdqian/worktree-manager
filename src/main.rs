@@ -8,8 +8,8 @@ use std::{
 use worktree_manager::{
     BACKGROUND_SETUP_WORKER_COMMAND, CONFIG_FILE_NAME, WorktreeBase,
     create_and_setup_worktree_from_base, current_worktree_base, generate_random_name,
-    list_worktree_bases, resolve_worktree_name, run_background_setup_worker,
-    start_background_setup,
+    list_worktree_bases, remove_current_worktree, resolve_worktree_name,
+    run_background_setup_worker, start_background_setup,
 };
 
 const SHELL_INIT: &str = r#"wt() {
@@ -27,6 +27,22 @@ const SHELL_INIT: &str = r#"wt() {
     rm -f "$wt_path_file"
     return "$wt_result"
   fi
+}
+
+dwt() {
+  local argument
+  for argument in "$@"; do
+    case "$argument" in
+      -h|--help)
+        command worktree-manager remove-current "$@"
+        return $?
+        ;;
+    esac
+  done
+
+  command worktree-manager remove-current "$@" || return
+  # Close the shell only after the worktree has been removed.
+  exit 0
 }"#;
 
 #[derive(Parser)]
@@ -49,6 +65,13 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum CliCommand {
+    /// Remove the current linked worktree and keep its branch.
+    RemoveCurrent {
+        /// Remove the worktree even if it has uncommitted changes.
+        #[arg(long, alias = "f")]
+        force: bool,
+    },
+
     /// Print the zsh/bash integration script.
     ShellInit,
 
@@ -80,6 +103,11 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
+        Some(CliCommand::RemoveCurrent { force }) => {
+            let cwd =
+                env::current_dir().map_err(|error| format!("failed to determine cwd: {error}"))?;
+            return remove_current_worktree(&cwd, force);
+        }
         Some(CliCommand::ShellInit) => {
             println!("{SHELL_INIT}");
             return Ok(());
